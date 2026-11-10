@@ -1,0 +1,50 @@
+# Dependencies / build output
+node_modules/
+dist/
+dist-ui/
+release/
+*.log
+*.blockmap
+*.exe
+*.msi
+*.sig
+*.zip
+latest.json
+
+# Secrets / keys / runtime user data
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.p12
+auth_tokens.json
+access-last.json
+accounts.json
+settings.json
+playit.toml
+
+# Tauri / Rust (generated)
+src-tauri/target/
+src-tauri/gen/
+src-tauri/backend/
+src-tauri/binaries/
+
+# Java agent build output (the used copy is src/main/agent/)
+agent-src/out/
+agent-src/*.jar
+
+# Editor / OS / AI tools
+.vscode/
+.idea/
+.claude/
+.gemini/
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.bak
+*.bak-before-*
+*.part
+*.tmp
+apply-*.js

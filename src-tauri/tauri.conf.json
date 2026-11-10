@@ -1,0 +1,52 @@
+{
+  "productName": "CRYOX CLIENT",
+  "mainBinaryName": "CRYOX CLIENT",
+  "version": "../package.json",
+  "identifier": "com.cryoxclient.launcher",
+  "build": {
+    "frontendDist": "../dist-ui",
+    "beforeBuildCommand": "node scripts/prepare.js"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": null },
+    "windows": [
+      {
+        "label": "main",
+        "title": "CRYOX CLIENT",
+        "width": 1280,
+        "height": 720,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#050508",
+        "dragDropEnabled": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Cryox Studios",
+    "shortDescription": "CRYOX CLIENT — Minecraft launcher",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "zlib"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENFMUY3MjcyMTc2RjIzRkQKUldUOUkyOFhjbklmemdxb0NjSlpCQ0tzalpQN3F4UnNUa2U1Rkl3N0JwdEl1YzJJaEExWVQ0a0wK",
+      "endpoints": [
+        "https://github.com/inrwxyz/inrwxyz-cryox-client/releases/latest/download/latest.json"
+      ],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

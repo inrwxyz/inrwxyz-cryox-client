@@ -1,0 +1,59 @@
+name: Release (Windows)
+
+# Push a tag like v1.0.0 (after bumping "version" via `node bump-version.js 1.0.0`) ->
+# builds the 100% Native Rust NSIS installer and publishes a GitHub Release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install JS dependencies
+        run: npm install
+
+      - name: Build + publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional updater signing secrets (Repo Settings > Secrets and variables > Actions)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'CRYOX CLIENT ${{ github.ref_name }}'
+          releaseBody: |
+            ## CRYOX CLIENT ${{ github.ref_name }} 🎮
+
+            ### ✨ Highlights & Features
+            - 🦀 **100% Native Rust Backend**: Built directly in Rust + Tauri v2 with zero Node.js sidecar at runtime, pure Win32 APIs, and a clean Windows PE release profile.
+            - 🎮 **Profile Isolation**: Independent game directories per profile, rounded RAM allocation, custom JVM flags, and automatic integrated-GPU light defaults.
+            - ⚡ **Mod Loaders**: Full support for **Vanilla**, **Fabric** (ASM 9.10+ / Java 25 compatible), and **Forge** (automated client processors & library merging).
+            - 📦 **Modrinth Integration**: Built-in browser for Mods, `.mrpack` Modpacks, Resource Packs, Shaders, and Data Packs, plus Fabric Performance Pack, SHA1 metadata lookup, 1-click/bulk content updates, and real-time OS folder watching.
+            - ☕ **Smart Java Management**: Detects Java 8, 17, 21, and 25 across PATH and Windows Registry (all drives), matches Mojang `javaVersion`, and auto-provisions portable Adoptium runtimes.
+            - 🔐 **Accounts & Skin Studio**: Microsoft OAuth with automatic token renewal and **Windows DPAPI encryption** (`CryptProtectData`), offline accounts, and local skin sync agent.
+            - 🖥️ **Server Hosting & Tunnels**: Create Vanilla, Paper (v3 Fill API), Purpur, and Fabric servers with live console, CPU/RAM/uptime telemetry, players, plugins/mods, file explorer & config editor, Geyser Bedrock crossplay, and built-in public tunnels (`bore.pub`, SSH, and Playit.gg).
+            - 🔑 **Server Access by Code (P2P)**: Grant a friend temporary remote access to a single server over WebRTC DataChannel using one-time 15-minute copy-paste handshake codes.
+            - 🎧 **Discord Rich Presence**: Native Windows named-pipe integration showing live launcher, profile, and server status.
+
+            ### 📦 Installation
+            Download the Windows setup installer (`CRYOX.CLIENT_*_x64-setup.exe`) below and run the setup wizard.
+          releaseDraft: false
+          prerelease: false

@@ -1,0 +1,20 @@
+{
+  "name": "inex-client",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CRYOX CLIENT — Premium Black & Crimson Windows Minecraft Launcher with Profile Management & Modrinth Content Browser",
+  "author": "Cryox Studios",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node scripts/prepare.js && tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "prepare-app": "node scripts/prepare.js",
+    "test": "node test/test-backend.js",
+    "embed-logo": "node scripts/embed-logo.js",
+    "clean": "cargo clean --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
