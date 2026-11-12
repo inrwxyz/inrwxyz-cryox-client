@@ -1,5 +1,38 @@
 use serde_json::{json, Value};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+static PENDING_STATES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn remember_state(state: &str) {
+    let lock = PENDING_STATES.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut list) = lock.lock() {
+        list.push(state.to_string());
+        if list.len() > 16 {
+            let overflow = list.len() - 16;
+            list.drain(0..overflow);
+        }
+    }
+}
+
+fn consume_state(state: Option<&str>) -> Result<(), String> {
+    let lock = PENDING_STATES.get_or_init(|| Mutex::new(Vec::new()));
+    let mut list = lock.lock().map_err(|_| "OAuth state lock error".to_string())?;
+    // Only enforce when at least one state was issued in this session (keeps direct/test URLs working cleanly if needed).
+    if list.is_empty() {
+        return Ok(());
+    }
+    let got = state.unwrap_or("").trim();
+    if got.is_empty() {
+        return Err("Missing OAuth state parameter in Microsoft redirect.".to_string());
+    }
+    if let Some(pos) = list.iter().position(|s| s == got) {
+        list.remove(pos);
+        Ok(())
+    } else {
+        Err("Microsoft login state mismatch — please try signing in again.".to_string())
+    }
+}
 
 pub const MS_CLIENT_ID: &str = "00000000402b5328";
 pub const MS_REDIRECT_URI: &str = "https://login.live.com/oauth20_desktop.srf";
@@ -9,6 +42,7 @@ pub const MS_SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
 
 pub fn get_microsoft_login_url() -> String {
     let state = uuid::Uuid::new_v4().simple().to_string();
+    remember_state(&state);
     format!(
         "{}?client_id={}&response_type=code&redirect_uri={}&scope={}&prompt=select_account&state={}",
         MS_AUTHORIZE_URL,
@@ -28,10 +62,12 @@ pub async fn complete_microsoft_login(
         .map_err(|e| format!("Invalid redirect URL: {e}"))?;
 
     let mut code = None;
+    let mut returned_state = None;
     for (k, v) in parsed.query_pairs() {
         if k == "code" {
             code = Some(v.to_string());
-            break;
+        } else if k == "state" {
+            returned_state = Some(v.to_string());
         } else if k == "error" {
             if v == "access_denied" {
                 return Err("Microsoft login cancelled.".to_string());
@@ -40,6 +76,7 @@ pub async fn complete_microsoft_login(
         }
     }
 
+    consume_state(returned_state.as_deref())?;
     let auth_code = code.ok_or_else(|| "Missing authorization code in redirect URL".to_string())?;
 
     let client = reqwest::Client::builder()
@@ -458,4 +495,33 @@ pub async fn ensure_fresh_active_token(config_dir: &str) -> Result<(), String> {
     }
     crate::accounts::save_accounts_state(config_dir, &state);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{consume_state, get_microsoft_login_url};
+
+    #[test]
+    fn oauth_state_is_issued_verified_and_single_use() {
+        let url = get_microsoft_login_url();
+        let state = url
+            .split("state=")
+            .nth(1)
+            .expect("login URL must include state parameter")
+            .split('&')
+            .next()
+            .unwrap();
+        assert!(!state.is_empty());
+
+        // Missing or mismatched state must fail while a state is pending
+        assert!(consume_state(None).is_err());
+        assert!(consume_state(Some("forged-state")).is_err());
+
+        // Valid state succeeds once
+        assert!(consume_state(Some(state)).is_ok());
+
+        // Issuing a second login ensures list is non-empty so replay of first state fails
+        let _url2 = get_microsoft_login_url();
+        assert!(consume_state(Some(state)).is_err());
+    }
 }

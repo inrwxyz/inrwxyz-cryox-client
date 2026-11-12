@@ -130,27 +130,31 @@ async fn bore_open_control(wanted_port: u16) -> Result<(tokio::net::TcpStream, u
         .map_err(|e| format!("bore.pub handshake failed: {e}"))?;
 
     let read_hello = async {
-        let mut buf: Vec<u8> = Vec::new();
-        let mut b = [0u8; 1];
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        let mut chunk = [0u8; 4096];
         loop {
-            match control.read(&mut b).await {
+            match control.read(&mut chunk).await {
                 Ok(0) => return Err("bore.pub closed the connection.".to_string()),
-                Ok(_) => {
-                    if b[0] == 0 {
-                        if let Ok(v) = serde_json::from_slice::<Value>(&buf) {
-                            if let Some(p) = v.get("Hello").and_then(|h| h.as_u64()) {
-                                return Ok(p as u16);
+                Ok(n) => {
+                    for &byte in &chunk[..n] {
+                        if byte == 0 {
+                            if let Ok(v) = serde_json::from_slice::<Value>(&buf) {
+                                if let Some(p) = v.get("Hello").and_then(|h| h.as_u64()) {
+                                    return Ok(p as u16);
+                                }
+                                if let Some(err) = v.get("Error").and_then(|e| e.as_str()) {
+                                    return Err(format!("bore.pub error: {err}"));
+                                }
+                                if v.get("Challenge").is_some() {
+                                    return Err("bore.pub asked for a secret (not supported).".to_string());
+                                }
                             }
-                            if let Some(err) = v.get("Error").and_then(|e| e.as_str()) {
-                                return Err(format!("bore.pub error: {err}"));
-                            }
-                            if v.get("Challenge").is_some() {
-                                return Err("bore.pub asked for a secret (not supported).".to_string());
-                            }
+                            buf.clear();
+                        } else if buf.len() < 64 * 1024 {
+                            buf.push(byte);
+                        } else {
+                            return Err("bore.pub handshake frame exceeded 64 KB limit.".to_string());
                         }
-                        buf.clear();
-                    } else {
-                        buf.push(b[0]);
                     }
                 }
                 Err(e) => return Err(format!("Read error from bore.pub: {e}")),
@@ -248,41 +252,46 @@ pub async fn share_tunnel(
     let local_port = port;
 
     tokio::spawn(async move {
-        let mut frame_buf = Vec::new();
-        let mut single = [0u8; 1];
+        let mut frame_buf = Vec::with_capacity(256);
+        let mut chunk = [0u8; 4096];
 
         loop {
             tokio::select! {
                 _ = &mut rx => {
                     break;
                 }
-                res = control.read(&mut single) => {
+                res = control.read(&mut chunk) => {
                     match res {
                         Ok(0) => break,
-                        Ok(_) => {
-                            if single[0] == 0 {
-                                if let Ok(msg) = serde_json::from_slice::<Value>(&frame_buf) {
-                                    if let Some(conn_id) = msg.get("Connection").and_then(|c| c.as_str()) {
-                                        let conn_str = conn_id.to_string();
-                                        tokio::spawn(async move {
-                                            if let Ok(mut remote) = tokio::net::TcpStream::connect("bore.pub:7835").await {
-                                                let _ = remote.set_nodelay(true);
-                                                let accept = json!({ "Accept": conn_str });
-                                                let mut accept_bytes = serde_json::to_vec(&accept).unwrap();
-                                                accept_bytes.push(0);
-                                                if remote.write_all(&accept_bytes).await.is_ok() {
-                                                    if let Ok(mut local) = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await {
-                                                        let _ = local.set_nodelay(true);
-                                                        let _ = tokio::io::copy_bidirectional(&mut remote, &mut local).await;
+                        Ok(n) => {
+                            for &byte in &chunk[..n] {
+                                if byte == 0 {
+                                    if let Ok(msg) = serde_json::from_slice::<Value>(&frame_buf) {
+                                        if let Some(conn_id) = msg.get("Connection").and_then(|c| c.as_str()) {
+                                            let conn_str = conn_id.to_string();
+                                            tokio::spawn(async move {
+                                                if let Ok(mut remote) = tokio::net::TcpStream::connect("bore.pub:7835").await {
+                                                    let _ = remote.set_nodelay(true);
+                                                    let accept = json!({ "Accept": conn_str });
+                                                    let mut accept_bytes = serde_json::to_vec(&accept).unwrap();
+                                                    accept_bytes.push(0);
+                                                    if remote.write_all(&accept_bytes).await.is_ok() {
+                                                        if let Ok(mut local) = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", local_port)).await {
+                                                            let _ = local.set_nodelay(true);
+                                                            let _ = tokio::io::copy_bidirectional(&mut remote, &mut local).await;
+                                                        }
                                                     }
                                                 }
-                                            }
-                                        });
+                                            });
+                                        }
                                     }
+                                    frame_buf.clear();
+                                } else if frame_buf.len() < 64 * 1024 {
+                                    frame_buf.push(byte);
+                                } else {
+                                    frame_buf.clear();
+                                    break;
                                 }
-                                frame_buf.clear();
-                            } else {
-                                frame_buf.push(single[0]);
                             }
                         }
                         Err(_) => break,
@@ -317,15 +326,20 @@ pub fn release_tunnel(app: AppHandle, config_dir: &str, server_id: &str) -> Valu
         }
     }
     crate::playit_ext::stop_direct(server_id);
-    {
-        let mut lock = get_state().lock().unwrap();
+    let should_stop_agent = {
+        let mut lock = get_state().lock().unwrap_or_else(|e| e.into_inner());
         lock.sharing.remove(server_id);
         lock.tunnels.remove(server_id);
         if lock.sharing.is_empty() {
-            crate::playit_ext::stop_agent();
             lock.status = "off".to_string();
             lock.message = String::new();
+            true
+        } else {
+            false
         }
+    };
+    if should_stop_agent {
+        crate::playit_ext::stop_agent();
     }
     let state = get_playit_state(config_dir);
     let _ = app.emit("inex-event", json!({

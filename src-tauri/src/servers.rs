@@ -175,7 +175,16 @@ pub fn tunnel_params(game_data_dir: &str, id: &str) -> (u16, Option<u16>, String
 }
 
 pub fn get_server_dir(game_data_dir: &str, id: &str) -> PathBuf {
-    Path::new(game_data_dir).join("servers").join(id)
+    let safe_id: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+    let safe_id = if safe_id.is_empty() || safe_id == "." || safe_id == ".." || safe_id.contains("..") {
+        "_invalid_server".to_string()
+    } else {
+        safe_id
+    };
+    Path::new(game_data_dir).join("servers").join(safe_id)
 }
 
 pub fn slugify(name: &str) -> String {
@@ -411,6 +420,18 @@ pub fn read_properties_values(server_dir: &Path) -> HashMap<String, String> {
 }
 
 pub fn write_properties(server_dir: &Path, updates: &HashMap<String, String>) -> Result<(), String> {
+    let sanitized_updates: HashMap<String, String> = updates
+        .iter()
+        .filter_map(|(k, v)| {
+            let clean_k = k.trim();
+            if clean_k.is_empty() || clean_k.contains(['\r', '\n', '=', '#']) {
+                return None;
+            }
+            let clean_v = v.replace(['\r', '\n'], " ");
+            Some((clean_k.to_string(), clean_v))
+        })
+        .collect();
+
     let file = server_dir.join("server.properties");
     // x_client keeps the existing file (comments, order) and only changes / appends the keys that were sent.
     let mut lines: Vec<String> = if file.exists() {
@@ -433,7 +454,7 @@ pub fn write_properties(server_dir: &Path, updates: &HashMap<String, String>) ->
                 continue;
             }
             let key = line[..i].trim().to_string();
-            if let Some(v) = updates.get(&key) {
+            if let Some(v) = sanitized_updates.get(&key) {
                 *line = format!("{key}={v}");
                 used.insert(key);
             }
@@ -442,7 +463,7 @@ pub fn write_properties(server_dir: &Path, updates: &HashMap<String, String>) ->
     while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
         lines.pop();
     }
-    let mut pending: Vec<(&String, &String)> = updates.iter().filter(|(k, _)| !used.contains(*k)).collect();
+    let mut pending: Vec<(&String, &String)> = sanitized_updates.iter().filter(|(k, _)| !used.contains(*k)).collect();
     pending.sort_by(|a, b| a.0.cmp(b.0));
     for (k, v) in pending {
         lines.push(format!("{k}={v}"));
@@ -1412,11 +1433,18 @@ pub fn kill_server(id: &str) -> Result<serde_json::Value, String> {
 }
 
 pub fn send_command(id: &str, cmd: &str) -> Result<serde_json::Value, String> {
-    let runtimes = get_server_runtimes().lock().unwrap();
+    if cmd.contains('\r') || cmd.contains('\n') || cmd.contains('\0') {
+        return Err("Multi-line or control characters are not allowed in server commands.".to_string());
+    }
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return Err("Command cannot be empty.".to_string());
+    }
+    let runtimes = get_server_runtimes().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(rt_arc) = runtimes.get(id) {
-        let mut rt = rt_arc.lock().unwrap();
+        let mut rt = rt_arc.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(stdin) = rt.stdin.as_mut() {
-            let _ = writeln!(stdin, "{}", cmd);
+            let _ = writeln!(stdin, "{}", trimmed);
             let _ = stdin.flush();
             return Ok(serde_json::json!({ "sent": true }));
         }
@@ -1425,12 +1453,72 @@ pub fn send_command(id: &str, cmd: &str) -> Result<serde_json::Value, String> {
 }
 
 pub fn get_server_log(id: &str) -> Vec<String> {
-    let runtimes = get_server_runtimes().lock().unwrap();
+    let runtimes = get_server_runtimes().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(rt_arc) = runtimes.get(id) {
-        let rt = rt_arc.lock().unwrap();
+        let rt = rt_arc.lock().unwrap_or_else(|e| e.into_inner());
         return rt.logs.clone();
     }
     Vec::new()
+}
+
+/// Resolve a relative path inside `base`, blocking `..`, roots, Windows drive prefixes, NUL bytes, and symlink escapes.
+pub fn resolve_server_rel_path(base: &Path, rel_path: &str, allow_empty: bool) -> Result<(String, PathBuf), String> {
+    if rel_path.contains('\0') {
+        return Err("Path traversal forbidden".to_string());
+    }
+    let raw = rel_path.replace('\\', "/");
+    if raw.starts_with('/') || (raw.len() >= 2 && raw.as_bytes()[1] == b':') {
+        return Err("Path traversal forbidden".to_string());
+    }
+
+    let mut clean_parts: Vec<String> = Vec::new();
+    for seg in raw.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => return Err("Path traversal forbidden".to_string()),
+            other => {
+                if other.contains(':') {
+                    return Err("Path traversal forbidden".to_string());
+                }
+                clean_parts.push(other.to_string());
+            }
+        }
+    }
+
+    if clean_parts.is_empty() && !allow_empty {
+        return Err("Missing relative file path.".to_string());
+    }
+
+    let clean_rel = clean_parts.join("/");
+    let mut target = base.to_path_buf();
+    for part in &clean_parts {
+        target.push(part);
+    }
+
+    if base.exists() {
+        let canon_base = fs::canonicalize(base).map_err(|e| e.to_string())?;
+        if target.exists() {
+            let canon_target = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+            if !canon_target.starts_with(&canon_base) {
+                return Err("Path traversal forbidden".to_string());
+            }
+        } else {
+            // Check nearest existing ancestor so new subdirectories cannot traverse via symlinks/junctions
+            let mut probe = target.parent();
+            while let Some(p) = probe {
+                if p.exists() {
+                    let canon_anc = fs::canonicalize(p).map_err(|e| e.to_string())?;
+                    if !canon_anc.starts_with(&canon_base) {
+                        return Err("Path traversal forbidden".to_string());
+                    }
+                    break;
+                }
+                probe = p.parent();
+            }
+        }
+    }
+
+    Ok((clean_rel, target))
 }
 
 fn is_editable_file(name: &str, size: u64) -> bool {
@@ -1453,16 +1541,7 @@ pub fn list_server_files(
     rel_path: &str,
 ) -> Result<serde_json::Value, String> {
     let base = get_server_dir(game_data_dir, id);
-    let clean_rel = rel_path
-        .replace('\\', "/")
-        .trim_start_matches('/')
-        .to_string();
-
-    let target = if clean_rel.is_empty() {
-        base.clone()
-    } else {
-        base.join(&clean_rel)
-    };
+    let (clean_rel, target) = resolve_server_rel_path(&base, rel_path, true)?;
 
     if !target.exists() || !target.is_dir() {
         return Ok(serde_json::json!({
@@ -1527,15 +1606,7 @@ pub fn read_server_file(
     rel_path: &str,
 ) -> Result<serde_json::Value, String> {
     let base = get_server_dir(game_data_dir, id);
-    let clean_rel = rel_path
-        .replace('\\', "/")
-        .trim_start_matches('/')
-        .to_string();
-
-    let target = base.join(&clean_rel);
-    if !target.starts_with(&base) {
-        return Err("Path traversal forbidden".to_string());
-    }
+    let (clean_rel, target) = resolve_server_rel_path(&base, rel_path, false)?;
 
     if !target.exists() || target.is_dir() {
         return Err("File not found.".to_string());
@@ -1566,23 +1637,15 @@ pub fn write_server_file(
     content: &str,
 ) -> Result<serde_json::Value, String> {
     let base = get_server_dir(game_data_dir, id);
-    let clean_rel = rel_path
-        .replace('\\', "/")
-        .trim_start_matches('/')
-        .to_string();
-
-    let target = base.join(&clean_rel);
-    if !target.starts_with(&base) {
-        return Err("Path traversal forbidden".to_string());
-    }
+    let (clean_rel, target) = resolve_server_rel_path(&base, rel_path, false)?;
 
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&target, content).map_err(|e| e.to_string())?;
 
     let is_running = {
-        let runtimes = get_server_runtimes().lock().unwrap();
+        let runtimes = get_server_runtimes().lock().unwrap_or_else(|e| e.into_inner());
         runtimes.contains_key(id)
     };
 
@@ -1609,8 +1672,17 @@ pub fn get_server_stats(id: &str) -> Vec<serde_json::Value> {
 pub fn get_player_lists(game_data_dir: &str, id: &str) -> serde_json::Value {
     let dir = get_server_dir(game_data_dir, id);
     let meta = read_meta(game_data_dir, id);
-    let runtimes = get_server_runtimes().lock().unwrap();
-    let is_running = runtimes.contains_key(id);
+    let (is_running, mut online_arr) = {
+        let runtimes = get_server_runtimes().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rt_arc) = runtimes.get(id) {
+            let rt = rt_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let list: Vec<String> = rt.players.iter().cloned().collect();
+            (true, list)
+        } else {
+            (false, Vec::new())
+        }
+    };
+    online_arr.sort();
 
     let read_json = |filename: &str| -> serde_json::Value {
         let path = dir.join(filename);
@@ -1655,7 +1727,7 @@ pub fn get_player_lists(game_data_dir: &str, id: &str) -> serde_json::Value {
     serde_json::json!({
         "running": is_running,
         "status": if is_running { "online" } else { "offline" },
-        "online": [],
+        "online": online_arr,
         "ops": ops_arr,
         "banned": banned_arr,
         "whitelist": white_arr,
@@ -1696,10 +1768,11 @@ pub fn player_action(
     }
 
     let who = name.trim();
-    if who.is_empty() {
-        return Err("Player username cannot be empty.".to_string());
+    if who.is_empty() || who.chars().any(|c| c.is_control()) || who.contains(['\r', '\n']) {
+        return Err("Invalid player username.".to_string());
     }
-    let why = reason.unwrap_or("").trim();
+    let why = reason.unwrap_or("").replace(['\r', '\n'], " ");
+    let why = why.trim();
 
     if is_running {
         let cmd = match action {
@@ -1965,12 +2038,36 @@ pub async fn install_server_addon(
         matches_game && matches_loader
     }).or_else(|| vers.first()).cloned().ok_or_else(|| "No compatible version found on Modrinth".to_string())?;
 
-    let file_obj = matched.get("files").and_then(|f| f.as_array()).and_then(|arr| arr.first()).ok_or_else(|| "No files found in version".to_string())?;
+    let files_arr = matched
+        .get("files")
+        .and_then(|f| f.as_array())
+        .ok_or_else(|| "No files found in version".to_string())?;
+    let file_obj = files_arr
+        .iter()
+        .find(|f| f.get("primary").and_then(|b| b.as_bool()) == Some(true))
+        .or_else(|| files_arr.first())
+        .ok_or_else(|| "No files found in version".to_string())?;
     let download_url = file_obj.get("url").and_then(|u| u.as_str()).ok_or_else(|| "Missing file url".to_string())?;
-    let filename = file_obj.get("filename").and_then(|f| f.as_str()).unwrap_or("addon.jar");
+    let raw_filename = file_obj.get("filename").and_then(|f| f.as_str()).unwrap_or("addon.jar");
+    let clean_filename = Path::new(raw_filename)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty() && s != "." && s != "..")
+        .ok_or_else(|| "Invalid addon file name".to_string())?;
+    let expected_sha1 = file_obj
+        .get("hashes")
+        .and_then(|h| h.get("sha1"))
+        .and_then(|s| s.as_str());
 
-    let dest = folder.join(filename);
+    let dest = folder.join(&clean_filename);
     let bytes = client.get(download_url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
+    if let Some(exp) = expected_sha1.filter(|s| !s.is_empty()) {
+        use sha1::{Digest, Sha1};
+        let actual = format!("{:x}", Sha1::digest(&bytes));
+        if !actual.eq_ignore_ascii_case(exp) {
+            return Err(format!("Addon checksum mismatch (expected {exp}, got {actual})"));
+        }
+    }
     fs::write(dest, bytes).map_err(|e| e.to_string())?;
 
     Ok(serde_json::json!({
@@ -1985,21 +2082,25 @@ pub fn toggle_server_addon(
     file_name: &str,
 ) -> Result<serde_json::Value, String> {
     let folder = server_addon_folder(game_data_dir, id);
-    let clean = Path::new(file_name).file_name().ok_or_else(|| "Invalid file name".to_string())?;
-    let cur = folder.join(clean);
+    let clean_name = Path::new(file_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty() && s != "." && s != "..")
+        .ok_or_else(|| "Invalid file name".to_string())?;
+    let cur = folder.join(&clean_name);
     if !cur.exists() {
         return Err("Addon file not found.".to_string());
     }
-    let is_disabled = file_name.ends_with(".disabled");
+    let is_disabled = clean_name.ends_with(".disabled");
     let next_name = if is_disabled {
-        file_name.trim_end_matches(".disabled").to_string()
+        clean_name.trim_end_matches(".disabled").to_string()
     } else {
-        format!("{}.disabled", file_name)
+        format!("{}.disabled", clean_name)
     };
     let next_path = folder.join(next_name);
     fs::rename(cur, next_path).map_err(|e| e.to_string())?;
 
-    let runtimes = get_server_runtimes().lock().unwrap();
+    let runtimes = get_server_runtimes().lock().unwrap_or_else(|e| e.into_inner());
     let is_running = runtimes.contains_key(id);
     Ok(serde_json::json!({
         "items": list_server_addons(game_data_dir, id),
@@ -2127,4 +2228,44 @@ pub fn runtime_status(id: &str) -> Option<String> {
     let rt_arc = runtimes.get(id)?;
     let rt = rt_arc.lock().ok()?;
     Some(rt.status.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_server_path_traversal_variants() {
+        let root = std::env::temp_dir().join("cryox_srv_path_test");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::create_dir_all(&root);
+        assert!(resolve_server_rel_path(&root, "../../Users/victim/.ssh/id_rsa", false).is_err());
+        assert!(resolve_server_rel_path(&root, "..\\secret.txt", false).is_err());
+        assert!(resolve_server_rel_path(&root, "C:\\Windows\\win.ini", false).is_err());
+        assert!(resolve_server_rel_path(&root, "/etc/passwd", false).is_err());
+        assert!(resolve_server_rel_path(&root, "config/../secrets.yml", false).is_err());
+        assert!(resolve_server_rel_path(&root, "", false).is_err());
+        assert!(resolve_server_rel_path(&root, "", true).is_ok());
+        let (rel, path) = resolve_server_rel_path(&root, "config/paper.yml", false).unwrap();
+        assert_eq!(rel, "config/paper.yml");
+        assert!(path.starts_with(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejects_multiline_command_and_sanitizes_properties() {
+        assert!(send_command("nonexistent", "say hi\nop attacker").is_err());
+        assert!(send_command("nonexistent", "   ").is_err());
+        let dir = std::env::temp_dir().join("cryox_props_test");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+        let mut updates = HashMap::new();
+        updates.insert("motd".to_string(), "Hello\nop attacker".to_string());
+        updates.insert("bad\nkey".to_string(), "value".to_string());
+        write_properties(&dir, &updates).unwrap();
+        let raw = fs::read_to_string(dir.join("server.properties")).unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines, vec!["motd=Hello op attacker"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

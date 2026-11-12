@@ -151,23 +151,38 @@ pub async fn download_file_with_verify(
     Ok(true)
 }
 
-pub fn evaluate_rule(rule: &Value, os_name: &str) -> bool {
-    let action = rule.get("action").and_then(|v| v.as_str()).unwrap_or("allow");
-    let os_match = if let Some(os) = rule.get("os") {
-        if let Some(name) = os.get("name").and_then(|v| v.as_str()) {
-            name == os_name
-        } else {
-            true
-        }
+fn current_mojang_arch() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
     } else {
-        true
-    };
-
-    if action == "allow" {
-        os_match
-    } else {
-        !os_match
+        "x86"
     }
+}
+
+/// Returns true when all conditions (`os.name`, `os.arch`, `features`) inside a rule match the host.
+pub fn evaluate_rule(rule: &Value, os_name: &str) -> bool {
+    if let Some(features) = rule.get("features").and_then(|v| v.as_object()) {
+        if !features.is_empty() {
+            return false;
+        }
+    }
+
+    if let Some(os) = rule.get("os") {
+        if let Some(name) = os.get("name").and_then(|v| v.as_str()) {
+            if name != os_name {
+                return false;
+            }
+        }
+        if let Some(arch) = os.get("arch").and_then(|v| v.as_str()) {
+            if !arch.eq_ignore_ascii_case(current_mojang_arch()) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 pub fn evaluate_rules(rules: Option<&Vec<Value>>, os_name: &str) -> bool {
@@ -635,54 +650,106 @@ pub async fn install_game_files(
         }
     }
 
-    // 3. Libraries
+    // 3. Libraries (concurrent with bounded semaphore and verified checksums)
     emit_progress(app, profile_id, "Verifying libraries", 30, "Checking required Minecraft libraries...").await;
     let mut native_jars = Vec::new();
+    let conc_libs = {
+        let st = crate::settings::SettingsManager::new().get_settings();
+        st.get("concurrentDownloads").and_then(|v| v.as_u64()).unwrap_or(8).clamp(1, 32) as usize
+    };
     if let Some(libs) = version_meta.get("libraries").and_then(|l| l.as_array()) {
-        let total = libs.len();
-        for (idx, lib) in libs.iter().enumerate() {
-            if cancel_flag.load(Ordering::SeqCst) {
-                return Err("Installation cancelled by user".to_string());
-            }
-
+        struct LibTask {
+            url: String,
+            dest: PathBuf,
+            sha1: Option<String>,
+            size: Option<u64>,
+            is_native: bool,
+        }
+        let mut tasks: Vec<LibTask> = Vec::new();
+        for lib in libs {
             let rules = lib.get("rules").and_then(|r| r.as_array());
             if !evaluate_rules(rules, "windows") {
                 continue;
             }
-
+            let lib_name = lib.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if current_mojang_arch() == "x64" && lib_name.to_lowercase().contains("natives-windows-x86") {
+                continue;
+            }
             if let Some(downloads) = lib.get("downloads") {
                 if let Some(artifact) = downloads.get("artifact") {
                     let path = artifact.get("path").and_then(|p| p.as_str()).unwrap_or("");
                     let url = artifact.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                    let sha1 = artifact.get("sha1").and_then(|s| s.as_str());
+                    let sha1 = artifact.get("sha1").and_then(|s| s.as_str()).map(|s| s.to_string());
                     let size = artifact.get("size").and_then(|s| s.as_u64());
-
                     if !path.is_empty() && !url.is_empty() {
-                        let dest = libraries_dir.join(path);
-                        let _ = download_file_with_verify(&client, url, &dest, sha1, size).await;
+                        tasks.push(LibTask {
+                            url: url.to_string(),
+                            dest: libraries_dir.join(path),
+                            sha1,
+                            size,
+                            is_native: lib_name.contains("natives-windows"),
+                        });
                     }
                 }
-
                 if let Some(classifiers) = downloads.get("classifiers") {
                     if let Some(natives_win) = classifiers.get("natives-windows").or_else(|| classifiers.get("natives-windows-64")) {
                         let path = natives_win.get("path").and_then(|p| p.as_str()).unwrap_or("");
                         let url = natives_win.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                        let sha1 = natives_win.get("sha1").and_then(|s| s.as_str());
+                        let sha1 = natives_win.get("sha1").and_then(|s| s.as_str()).map(|s| s.to_string());
                         let size = natives_win.get("size").and_then(|s| s.as_u64());
-
                         if !path.is_empty() && !url.is_empty() {
-                            let dest = libraries_dir.join(path);
-                            if download_file_with_verify(&client, url, &dest, sha1, size).await.is_ok() {
-                                native_jars.push(dest);
-                            }
+                            tasks.push(LibTask {
+                                url: url.to_string(),
+                                dest: libraries_dir.join(path),
+                                sha1,
+                                size,
+                                is_native: true,
+                            });
                         }
                     }
                 }
             }
+        }
 
-            if idx % 5 == 0 {
-                let pct = 30 + ((idx as u32 * 35) / total.max(1) as u32);
-                emit_progress(app, profile_id, "Downloading libraries", pct, &format!("Checked {}/{} libraries", idx + 1, total)).await;
+        let total = tasks.len();
+        let sem = Arc::new(tokio::sync::Semaphore::new(conc_libs));
+        let mut set: tokio::task::JoinSet<Result<Option<PathBuf>, String>> = tokio::task::JoinSet::new();
+        for t in tasks {
+            let client_c = client.clone();
+            let sem_c = sem.clone();
+            set.spawn(async move {
+                let _permit = sem_c.acquire_owned().await.map_err(|e| e.to_string())?;
+                match download_file_with_verify(&client_c, &t.url, &t.dest, t.sha1.as_deref(), t.size).await {
+                    Ok(_) => Ok(if t.is_native { Some(t.dest) } else { None }),
+                    Err(_) => {
+                        download_file_with_verify(&client_c, &t.url, &t.dest, t.sha1.as_deref(), t.size).await?;
+                        Ok(if t.is_native { Some(t.dest) } else { None })
+                    }
+                }
+            });
+        }
+        let mut done: usize = 0;
+        while let Some(joined) = set.join_next().await {
+            if cancel_flag.load(Ordering::SeqCst) {
+                set.abort_all();
+                return Err("Installation cancelled by user".to_string());
+            }
+            done += 1;
+            match joined {
+                Ok(Ok(Some(nat))) => native_jars.push(nat),
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    set.abort_all();
+                    return Err(format!("Failed to download required Minecraft library: {e}"));
+                }
+                Err(e) => {
+                    set.abort_all();
+                    return Err(format!("Library download task failed: {e}"));
+                }
+            }
+            if done % 5 == 0 || done == total {
+                let pct = 30 + ((done as u32 * 35) / total.max(1) as u32);
+                emit_progress(app, profile_id, "Downloading libraries", pct, &format!("Checked {}/{} libraries", done, total)).await;
             }
         }
     }
@@ -700,13 +767,40 @@ pub async fn install_game_files(
         };
         let fabric_profile = crate::loaders::resolve_fabric_profile(&client, mc_version, &loader_ver).await;
         if let Some(fab_libs) = fabric_profile.get("libraries").and_then(|l| l.as_array()) {
+            let sem = Arc::new(tokio::sync::Semaphore::new(conc_libs));
+            let mut set: tokio::task::JoinSet<Result<(), String>> = tokio::task::JoinSet::new();
             for fl in fab_libs {
                 let name = fl.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let base_url = fl.get("url").and_then(|u| u.as_str()).unwrap_or("https://maven.fabricmc.net/");
                 if let Some(rel) = crate::loaders::maven_coord_to_path(name) {
                     let dest = libraries_dir.join(&rel);
                     let url = format!("{}{}", base_url, rel);
-                    let _ = download_file_with_verify(&client, &url, &dest, None, None).await;
+                    let client_c = client.clone();
+                    let sem_c = sem.clone();
+                    set.spawn(async move {
+                        let _permit = sem_c.acquire_owned().await.map_err(|e| e.to_string())?;
+                        match download_file_with_verify(&client_c, &url, &dest, None, None).await {
+                            Ok(_) => Ok(()),
+                            Err(_) => download_file_with_verify(&client_c, &url, &dest, None, None).await.map(|_| ()),
+                        }
+                    });
+                }
+            }
+            while let Some(joined) = set.join_next().await {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    set.abort_all();
+                    return Err("Installation cancelled by user".to_string());
+                }
+                match joined {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        set.abort_all();
+                        return Err(format!("Failed to download required Fabric library: {e}"));
+                    }
+                    Err(e) => {
+                        set.abort_all();
+                        return Err(format!("Fabric library download task failed: {e}"));
+                    }
                 }
             }
         }
@@ -826,4 +920,47 @@ pub async fn install_game_files(
 
     emit_progress(app, profile_id, "Installation complete", 100, "Minecraft runtime verified and ready to play!").await;
     Ok(version_json_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{evaluate_rules, current_mojang_arch};
+    use serde_json::json;
+
+    #[test]
+    fn evaluate_rules_handles_disallow_and_arch_and_features() {
+        let arch = current_mojang_arch();
+        let other_arch = if arch == "x64" { "x86" } else { "x64" };
+        let cur_os = if cfg!(target_os = "windows") { "windows" } else if cfg!(target_os = "macos") { "osx" } else { "linux" };
+        let other_os = if cur_os == "windows" { "osx" } else { "windows" };
+
+        assert!(evaluate_rules(None, cur_os));
+
+        // Base allow + disallow for another OS must STILL allow on current OS
+        let rules = vec![
+            json!({ "action": "allow" }),
+            json!({ "action": "disallow", "os": { "name": other_os } }),
+        ];
+        assert!(evaluate_rules(Some(&rules), cur_os), "disallow for another OS must not exclude current OS");
+
+        // Disallow matching current arch must exclude
+        let disallow_arch = vec![
+            json!({ "action": "allow" }),
+            json!({ "action": "disallow", "os": { "arch": arch } }),
+        ];
+        assert!(!evaluate_rules(Some(&disallow_arch), cur_os));
+
+        // Disallow non-matching arch must allow
+        let disallow_other_arch = vec![
+            json!({ "action": "allow" }),
+            json!({ "action": "disallow", "os": { "arch": other_arch } }),
+        ];
+        assert!(evaluate_rules(Some(&disallow_other_arch), cur_os));
+
+        // Feature-gated rules (e.g. demo user / quick play) must not match by default
+        let feature_rule = vec![
+            json!({ "action": "allow", "features": { "is_demo_user": true } }),
+        ];
+        assert!(!evaluate_rules(Some(&feature_rule), cur_os));
+    }
 }

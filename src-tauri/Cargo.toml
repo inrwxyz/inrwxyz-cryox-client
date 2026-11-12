@@ -1,6 +1,6 @@
 [package]
 name = "inex-client"
-version = "1.0.0"
+version = "1.0.1"
 description = "CRYOX CLIENT — Minecraft launcher"
 authors = ["Cryox Studios"]
 edition = "2021"

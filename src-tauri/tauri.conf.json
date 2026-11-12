@@ -9,7 +9,10 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "security": { "csp": null },
+    "security": {
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "csp": "default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ipc: http://ipc.localhost https: wss:; object-src 'none'; base-uri 'self'"
+    },
     "windows": [
       {
         "label": "main",

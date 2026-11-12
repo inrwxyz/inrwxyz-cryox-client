@@ -66,12 +66,37 @@
     }
   }
 
+  const MAX_BUF_CHUNKS = 2048;
+  const MAX_BUF_ENTRIES = 32;
+  const BUF_TTL_MS = 30000;
+
   function onRaw(link, raw, handler) {
     let f;
     try { f = JSON.parse(raw); } catch (_) { return; }
-    if (!f || typeof f.i !== 'string') return;
+    if (!f || typeof f.i !== 'string' || !f.i || f.i.length > 64) return;
+    if (!Number.isInteger(f.n) || f.n < 1 || f.n > MAX_BUF_CHUNKS) return;
+    if (!Number.isInteger(f.s) || f.s < 0 || f.s >= f.n) return;
+    if (typeof f.d !== 'string') return;
+
+    const now = Date.now();
+    for (const [k, v] of link.buf) {
+      if (now - v.ts > BUF_TTL_MS) link.buf.delete(k);
+    }
+
     let b = link.buf.get(f.i);
-    if (!b) { b = { n: f.n, parts: [], got: 0 }; link.buf.set(f.i, b); }
+    if (!b) {
+      if (link.buf.size >= MAX_BUF_ENTRIES) {
+        const oldestKey = link.buf.keys().next().value;
+        if (oldestKey !== undefined) link.buf.delete(oldestKey);
+      }
+      b = { n: f.n, parts: new Array(f.n), got: 0, ts: now };
+      link.buf.set(f.i, b);
+    } else if (f.n !== b.n) {
+      return;
+    } else {
+      b.ts = now;
+    }
+
     if (b.parts[f.s] === undefined) { b.parts[f.s] = f.d; b.got++; }
     if (b.got >= b.n) {
       link.buf.delete(f.i);
@@ -122,6 +147,7 @@
     try { if (link.pc) { link.pc.onconnectionstatechange = null; link.pc.close(); } } catch (_) {}
     link.pending.forEach(p => { clearTimeout(p.timer); p.reject(new Error('P2P link closed.')); });
     link.pending.clear();
+    link.buf.clear();
   }
 
   /* ================= FRIEND SIDE (pastes the host code) ================= */

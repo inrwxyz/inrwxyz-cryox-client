@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub mod accounts;
@@ -55,6 +55,39 @@ struct Sidecar {
     next_id: AtomicU64,
     /// set once the app is shutting down (window closed / quit requested)
     closing: AtomicBool,
+}
+
+fn shared_http_client() -> &'static reqwest::Client {
+    static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("Cryox-Client-Launcher/1.0.0")
+            .connect_timeout(Duration::from_secs(15))
+            .pool_idle_timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+pub async fn restart_server_by_id(
+    app: AppHandle,
+    id: &str,
+    settings: &Value,
+) -> Result<Value, String> {
+    let _ = servers::stop_server(id);
+    for _ in 0..120 {
+        match servers::runtime_status(id).as_deref() {
+            None | Some("offline") => break,
+            _ => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
+    let config_dir = settings.get("configDir").and_then(|s| s.as_str()).unwrap_or(".");
+    let java_dir = settings.get("javaDir").and_then(|s| s.as_str()).unwrap_or(".");
+    servers::start_server(app, game_data_dir, config_dir, java_dir, id)
+        .await
+        .map(|s| json!(s))
 }
 
 fn emit_access_state(app: &AppHandle) {
@@ -181,8 +214,7 @@ async fn inex_invoke(
         }
         "loaders:supported" => {
             let mc_version = args.first().and_then(|v| v.as_str()).unwrap_or("1.21.4");
-            let client = reqwest::Client::new();
-            let supported = loaders::get_supported_loaders(&client, mc_version).await;
+            let supported = loaders::get_supported_loaders(shared_http_client(), mc_version).await;
             return Ok(json!(supported));
         }
         "profiles:list" => {
@@ -317,7 +349,7 @@ async fn inex_invoke(
             }
         }
         "content:search" => {
-            let client = reqwest::Client::new();
+            let client = shared_http_client().clone();
             let empty = json!({});
             let opts = args.first().unwrap_or(&empty);
             let pid = opts.get("profileId").and_then(|v| v.as_str()).unwrap_or("");
@@ -770,8 +802,7 @@ async fn inex_invoke(
             let exec_args = args.get(2).and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let mgr = settings::SettingsManager::new();
             let settings = mgr.get_settings();
-            let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
-            return code_access::p2p_exec(code, method, &exec_args, game_data_dir);
+            return code_access::p2p_exec(&app, code, method, &exec_args, &settings).await;
         }
         "playit:state" => {
             let mgr = settings::SettingsManager::new();
@@ -833,7 +864,7 @@ async fn inex_invoke(
             let mgr = settings::SettingsManager::new();
             let settings = mgr.get_settings();
             let java_dir = settings.get("javaDir").and_then(|s| s.as_str()).unwrap_or(".");
-            let client = reqwest::Client::new();
+            let client = shared_http_client();
             let app_for_progress = app.clone();
             let progress = move |stage: &str, percent: u32, detail: &str| {
                 let _ = app_for_progress.emit(
@@ -844,7 +875,7 @@ async fn inex_invoke(
                     }),
                 );
             };
-            let rt = java::bundle_portable_java_with_progress(&client, std::path::Path::new(java_dir), major, &progress).await?;
+            let rt = java::bundle_portable_java_with_progress(client, std::path::Path::new(java_dir), major, &progress).await?;
             let runtimes = java::detect_installed_runtimes(std::path::Path::new(java_dir));
             return Ok(json!({ "runtimes": runtimes, "runtime": rt }));
         }
@@ -877,14 +908,20 @@ async fn inex_invoke(
             return Ok(Value::Null);
         }
         "dialog:selectDirectory" => {
-            let mut b = app.dialog().file();
-            if let Some(d) = args.first().and_then(Value::as_str) {
-                let p = PathBuf::from(d);
-                if p.is_dir() {
-                    b = b.set_directory(p);
+            let default_dir = args.first().and_then(Value::as_str).map(|s| s.to_string());
+            let app_c = app.clone();
+            let picked = tauri::async_runtime::spawn_blocking(move || {
+                let mut b = app_c.dialog().file();
+                if let Some(d) = default_dir {
+                    let p = PathBuf::from(d);
+                    if p.is_dir() {
+                        b = b.set_directory(p);
+                    }
                 }
-            }
-            let picked = b.blocking_pick_folder();
+                b.blocking_pick_folder()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             match picked {
                 Some(fp) => {
                     if let Ok(p) = fp.into_path() {
@@ -899,22 +936,9 @@ async fn inex_invoke(
         }
         "servers:restart" => {
             if let Some(id) = args.first().and_then(|v| v.as_str()) {
-                let _ = servers::stop_server(id);
-                // stop is asynchronous (the server saves the world first): wait until it is really offline
-                // (stop_server force-kills after 15s), otherwise the new start would clash with the old process.
-                for _ in 0..120 {
-                    match servers::runtime_status(id).as_deref() {
-                        None | Some("offline") => break,
-                        _ => tokio::time::sleep(Duration::from_millis(500)).await,
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(300)).await;
                 let mgr = settings::SettingsManager::new();
                 let settings = mgr.get_settings();
-                let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
-                let config_dir = settings.get("configDir").and_then(|s| s.as_str()).unwrap_or(".");
-                let java_dir = settings.get("javaDir").and_then(|s| s.as_str()).unwrap_or(".");
-                return servers::start_server(app, game_data_dir, config_dir, java_dir, id).await.map(|s| json!(s));
+                return restart_server_by_id(app.clone(), id, &settings).await;
             }
         }
         "servers:stats" => {
@@ -955,8 +979,7 @@ async fn inex_invoke(
                 let mgr = settings::SettingsManager::new();
                 let settings = mgr.get_settings();
                 let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
-                let client = reqwest::Client::new();
-                return Ok(servers::search_server_addons(&client, game_data_dir, id, opts).await);
+                return Ok(servers::search_server_addons(shared_http_client(), game_data_dir, id, opts).await);
             }
         }
         "servers:addons:install" => {
@@ -965,8 +988,7 @@ async fn inex_invoke(
                     let mgr = settings::SettingsManager::new();
                     let settings = mgr.get_settings();
                     let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
-                    let client = reqwest::Client::new();
-                    return servers::install_server_addon(&client, game_data_dir, id, opts).await;
+                    return servers::install_server_addon(shared_http_client(), game_data_dir, id, opts).await;
                 }
             }
         }
@@ -1003,8 +1025,7 @@ async fn inex_invoke(
                 let mgr = settings::SettingsManager::new();
                 let settings = mgr.get_settings();
                 let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
-                let client = reqwest::Client::new();
-                return servers::install_bedrock_support(&client, game_data_dir, id).await;
+                return servers::install_bedrock_support(shared_http_client(), game_data_dir, id).await;
             }
         }
         _ => {}

@@ -895,8 +895,8 @@ fn hash_folder(dir: &Path) -> Vec<(String, String, String)> {
             }
             let name = e.file_name().to_string_lossy().to_string();
             let base = name.strip_suffix(".disabled").unwrap_or(&name).to_string();
-            if let Ok(bytes) = fs::read(&p) {
-                out.push((sha1_hex(&bytes), name, base));
+            if let Some(sha1) = crate::installer::compute_file_sha1(&p) {
+                out.push((sha1, name, base));
             }
         }
     }
@@ -1047,8 +1047,8 @@ pub async fn sync_installed_content(profile: &crate::profiles::Profile, project_
                 if known {
                     entry.checked = true;
                 } else if !entry.checked && size <= 200 * 1024 * 1024 {
-                    if let Ok(bytes) = fs::read(&p) {
-                        hashed.push((sha1_hex(&bytes), name.clone(), base.clone()));
+                    if let Some(sha1) = crate::installer::compute_file_sha1(&p) {
+                        hashed.push((sha1, name.clone(), base.clone()));
                         pending.push(key.clone());
                     }
                 }
