@@ -24,19 +24,19 @@ pub fn default_skin_slots() -> Vec<SkinSlot> {
     vec![
         SkinSlot {
             id: "slot-1".to_string(),
-            name: "Slot 1 — Crimson Phantom".to_string(),
-            model: "slim".to_string(),
-            preset: "crimson-phantom".to_string(),
-            cape_preset: Some("inex-crest".to_string()),
+            name: "Slot 1 — Steve".to_string(),
+            model: "classic".to_string(),
+            preset: "steve".to_string(),
+            cape_preset: None,
             custom_skin_data_url: None,
             active: true,
         },
         SkinSlot {
             id: "slot-2".to_string(),
-            name: "Slot 2 — Obsidian Knight".to_string(),
+            name: "Slot 2 — Alex".to_string(),
             model: "slim".to_string(),
-            preset: "obsidian-knight".to_string(),
-            cape_preset: Some("inex-crest".to_string()),
+            preset: "alex".to_string(),
+            cape_preset: None,
             custom_skin_data_url: None,
             active: false,
         },
@@ -151,6 +151,18 @@ pub fn load_accounts_state(config_dir: &str) -> AccountsState {
                 for acc in &mut state.accounts {
                     if acc.skin_slots.is_empty() {
                         acc.skin_slots = default_slots.clone();
+                    } else {
+                        for slot in &mut acc.skin_slots {
+                            if slot.preset == "crimson-phantom" && slot.custom_skin_data_url.is_none() {
+                                slot.name = "Slot 1 — Steve".to_string();
+                                slot.model = "classic".to_string();
+                                slot.preset = "steve".to_string();
+                            } else if slot.preset == "obsidian-knight" && slot.custom_skin_data_url.is_none() {
+                                slot.name = "Slot 2 — Alex".to_string();
+                                slot.model = "slim".to_string();
+                                slot.preset = "alex".to_string();
+                            }
+                        }
                     }
                     if acc.active_skin_slot.is_empty() {
                         acc.active_skin_slot = acc
@@ -158,6 +170,19 @@ pub fn load_accounts_state(config_dir: &str) -> AccountsState {
                             .first()
                             .map(|s| s.id.clone())
                             .unwrap_or_else(|| "slot-1".to_string());
+                    }
+                }
+                if let Some(ref mut global_slots) = state.skin_slots {
+                    for slot in global_slots.iter_mut() {
+                        if slot.preset == "crimson-phantom" && slot.custom_skin_data_url.is_none() {
+                            slot.name = "Slot 1 — Steve".to_string();
+                            slot.model = "classic".to_string();
+                            slot.preset = "steve".to_string();
+                        } else if slot.preset == "obsidian-knight" && slot.custom_skin_data_url.is_none() {
+                            slot.name = "Slot 2 — Alex".to_string();
+                            slot.model = "slim".to_string();
+                            slot.preset = "alex".to_string();
+                        }
                     }
                 }
                 return state;
@@ -332,6 +357,8 @@ pub fn add_skin_slot(config_dir: &str, name: Option<&str>) -> Result<AccountsRes
 
     let slot_num = acc.skin_slots.len() + 1;
     let presets = [
+        "steve",
+        "alex",
         "crimson-phantom",
         "obsidian-knight",
         "ash-valkyrie",

@@ -9,6 +9,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 static RUNNING_PROCESSES: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 
+pub const INEX_COSMETICS_AGENT_JAR: &[u8] = include_bytes!("../resources/inex-cosmetics-agent.jar");
+
 fn with_running<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<String, u32>) -> R,
@@ -26,6 +28,18 @@ pub fn is_profile_running(profile_id: &str) -> bool {
 
 pub fn get_running_profiles() -> Vec<String> {
     with_running(|map| map.keys().cloned().collect())
+}
+
+pub fn register_running_profile(profile_id: String, pid: u32) {
+    with_running(|map| {
+        map.insert(profile_id, pid);
+    });
+}
+
+pub fn unregister_running_profile(profile_id: &str) {
+    with_running(|map| {
+        map.remove(profile_id);
+    });
 }
 
 pub fn stop_game(profile_id: &str) -> Result<Value, String> {
@@ -543,7 +557,26 @@ pub async fn launch_profile(
     if skin_sync {
         if let Some(c) = cosmetics.as_ref() {
             if let Some(skin_file) = c.skin_file.as_ref() {
+                // Ensure agent jar is extracted and up to date in hud-mods and game directory
+                let hud_mods_dir = PathBuf::from(&config_dir_str).join("hud-mods");
+                let _ = fs::create_dir_all(&hud_mods_dir);
+                let hud_agent = hud_mods_dir.join("inex-cosmetics-agent.jar");
+                if !hud_agent.is_file() || fs::metadata(&hud_agent).map(|m| m.len()).unwrap_or(0) != INEX_COSMETICS_AGENT_JAR.len() as u64 {
+                    let _ = fs::write(&hud_agent, INEX_COSMETICS_AGENT_JAR);
+                }
+
+                let game_agent = PathBuf::from(&profile.game_dir).join("inex-cosmetics-agent.jar");
+                if !game_agent.is_file() || fs::metadata(&game_agent).map(|m| m.len()).unwrap_or(0) != INEX_COSMETICS_AGENT_JAR.len() as u64 {
+                    let _ = fs::write(&game_agent, INEX_COSMETICS_AGENT_JAR);
+                }
+
                 let mut agent_candidates: Vec<PathBuf> = Vec::new();
+                if game_agent.is_file() {
+                    agent_candidates.push(game_agent);
+                }
+                if hud_agent.is_file() {
+                    agent_candidates.push(hud_agent);
+                }
                 if let Ok(res) = app.path().resource_dir() {
                     agent_candidates.push(res.join("inex-cosmetics-agent.jar"));
                     agent_candidates.push(res.join("default-mods").join("inex-cosmetics-agent.jar"));
@@ -553,7 +586,6 @@ pub async fn launch_profile(
                     agent_candidates.push(dir.join("inex-cosmetics-agent.jar"));
                     agent_candidates.push(dir.join("default-mods").join("inex-cosmetics-agent.jar"));
                 }
-                agent_candidates.push(PathBuf::from(&config_dir_str).join("hud-mods").join("inex-cosmetics-agent.jar"));
                 if let Some(agent) = agent_candidates.into_iter().find(|c| c.is_file()) {
                     jvm_args.push(format!("-javaagent:{}", agent.display()));
                     jvm_args.push("-Dinex.skin.online=false".to_string());

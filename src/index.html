@@ -18,7 +18,8 @@
     }
   </style>
 </head>
-<body data-active-tab="home">
+<body data-theme="light" data-active-tab="home">
+<script>(function(){try{var t=localStorage.getItem('cryox_theme')||'light';if(t!=='dark')t='light';document.body.setAttribute('data-theme',t);document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="6.2" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3.5" y="13.8" width="17" height="6.2" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle class="drip" cx="7.4" cy="7.1" r="1.1" fill="var(--drip, currentColor)"/><circle class="drip" cx="7.4" cy="16.9" r="1.1" fill="var(--drip, currentColor)"/><path d="M11.5 7.1h5M11.5 16.9h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
@@ -117,6 +118,9 @@
           </button>
           <button type="button" class="nav-btn" data-nav="server">
             <svg class="ico"><use href="#i-server"/></svg><span>Server</span>
+          </button>
+          <button type="button" class="nav-btn" data-nav="rust" id="navRustBtn">
+            <svg class="ico"><use href="#i-chip"/></svg><span>Rust Version</span>
           </button>
         </nav>
 
@@ -531,6 +535,143 @@
           </div>
         </section>
 
+        <!-- ================= RUST VERSION ================= -->
+        <section class="view-section" id="view-rust">
+          <div id="rustHomeSubView" style="display:flex; flex-direction:column; flex:1;">
+          <div class="home-hero-frame rust-hero">
+            <div class="home-hero-grid">
+              <div class="home-brand-col">
+                <h1 class="home-brand-title">RUST <span>ENGINE</span></h1>
+                <p class="home-brand-subtitle">Rust Native Engine</p>
+                <p class="rust-sub" style="margin:12px 0 14px;">High-performance zero-Java Minecraft powered by Horizon (38%+ more FPS, instant startup)</p>
+                <div class="rust-badges" style="margin:0;">
+                  <span class="rust-badge"><svg class="ico ico-sm"><use href="#i-bolt"/></svg>Zero JVM</span>
+                  <span class="rust-badge"><svg class="ico ico-sm"><use href="#i-chip"/></svg>Pure Rust wgpu renderer</span>
+                  <span class="rust-badge"><svg class="ico ico-sm"><use href="#i-check"/></svg>Vanilla parity</span>
+                </div>
+              </div>
+
+              <div class="home-right-col">
+                <div class="home-specs-grid">
+                  <div class="spec-tile"><span class="spec-bar"></span><div class="spec-body"><span class="spec-label">ENGINE:</span><strong id="rustEngineBadge">Horizon (Rust)</strong></div></div>
+                  <div class="spec-tile"><span class="spec-bar"></span><div class="spec-body"><span class="spec-label">BUILD:</span><strong id="rustBuildBadge">No profile selected</strong></div></div>
+                  <div class="spec-tile"><span class="spec-bar"></span><div class="spec-body"><span class="spec-label">BACKEND:</span><strong id="rustBackendBadge">Auto</strong></div></div>
+                  <div class="spec-tile"><span class="spec-bar"></span><div class="spec-body"><span class="spec-label">STATUS:</span><strong id="rustStatusBadge">Create a Rust profile to play</strong></div></div>
+                </div>
+
+                <div class="launch-cluster">
+                  <div class="profile-dropdown-menu glass-panel" id="rustProfileDropdown"></div>
+                  <div class="launch-split-box" id="rustLaunchSplitBox">
+                    <button type="button" class="launch-main-btn" id="rustMainPlayBtn">
+                      <span class="launch-text">
+                        <span class="launch-main-title" id="rustMainPlayTitle">CREATE RUST PROFILE</span>
+                        <span class="launch-main-sub" id="rustMainPlaySub">No Rust profile yet. Click to create one.</span>
+                        <span class="launch-main-hint" id="rustMainPlayHint">Zero JVM &bull; Horizon native engine</span>
+                      </span>
+                    </button>
+                    <button type="button" class="launch-dropdown-trigger" id="rustLaunchDropdownBtn" title="Pick a Rust profile">
+                      <svg class="ico ico-sm"><use href="#i-chev-down"/></svg>
+                    </button>
+                  </div>
+
+                  <div class="home-quick-profiles" id="rustQuickProfilesRow">
+                    <button type="button" class="quick-profile-pill" id="rustGoToProfilesBtn"><svg class="ico ico-sm"><use href="#i-layers"/></svg><span>Profiles</span></button>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          </div>
+
+            <div class="home-credit">Made with ❤️ for gamers &bull; Native Engine powered by Horizon Project</div>
+          </div>
+
+          <div id="rustProfilesSubView" style="display:none; flex-direction:column; flex:1;">
+            <div class="section-header-row">
+              <h2 class="section-title">Your Rust profiles</h2>
+              <div style="display:flex; gap:8px;">
+                <button type="button" class="btn glass-btn" id="rustBackBtn"><svg class="ico ico-sm"><use href="#i-back"/></svg>Back to Rust Home</button>
+                <button type="button" class="btn btn-crimson" id="rustCreateProfileBtn"><svg class="ico ico-sm"><use href="#i-plus"/></svg>Create profile</button>
+              </div>
+            </div>
+
+            <div class="toolbar-row">
+              <div class="search-input-wrap">
+                <svg class="ico ico-sm"><use href="#i-search"/></svg>
+                <input type="text" class="inex-input glass-input" id="rustProfileSearchInput" placeholder="Search Rust profiles..." />
+              </div>
+            </div>
+
+            <div class="cards-grid" id="rustProfilesGrid"></div>
+          </div>
+
+          <div id="rustCreateProfileSubView" style="display:none; flex-direction:column; flex:1;">
+            <div class="section-header-row">
+              <h2 class="section-title" id="rustCreateHeaderTitle">Create Rust Profile</h2>
+              <button type="button" class="btn glass-btn" id="closeRustCreateProfileBtn"><svg class="ico ico-sm"><use href="#i-close"/></svg>Back to Profiles</button>
+            </div>
+
+            <div class="create-profile-layout">
+              <div class="create-form-panel glass-panel">
+                <div class="form-top-bar">
+                  <div class="form-mode-heading">
+                    <span class="red-dot"></span>
+                    <span id="rustCreateFormModeLabel">CREATE RUST PROFILE</span>
+                  </div>
+                </div>
+
+                <div class="vanilla-form-pill" style="display:flex;">
+                  <svg class="ico ico-sm"><use href="#i-chip"/></svg> Pure Rust wgpu engine &bull; Zero JVM &bull; Instant Startup
+                </div>
+
+                <div class="field-group">
+                  <label class="field-label" for="rustProfileNameInput">
+                    <span class="field-label-left"><svg class="ico ico-xs"><use href="#i-user"/></svg> PROFILE NAME</span>
+                  </label>
+                  <input type="text" class="inex-input glass-input" id="rustProfileNameInput" placeholder="e.g. Horizon-Nightly" />
+                </div>
+
+                <div class="field-group">
+                  <div class="field-label">
+                    <label for="rustProfileBuildSelect" class="field-label-left"><svg class="ico ico-xs"><use href="#i-layers"/></svg> HORIZON BUILD</label>
+                    <button type="button" class="refresh-pill-btn" id="rustFullRefreshBtn" title="Refresh Horizon builds"><svg class="ico ico-xs"><use href="#i-refresh"/></svg> Refresh</button>
+                  </div>
+                  <select class="inex-select glass-input" id="rustProfileBuildSelect"></select>
+                </div>
+
+                <div class="field-group">
+                  <label class="field-label" for="rustProfileBackendSelect">
+                    <span class="field-label-left"><svg class="ico ico-xs"><use href="#i-monitor"/></svg> GRAPHICS BACKEND</span>
+                  </label>
+                  <select class="inex-select glass-input" id="rustProfileBackendSelect">
+                    <option value="auto">Auto (Vulkan / DirectX 12)</option>
+                    <option value="vulkan">Vulkan (High FPS &amp; Low Latency)</option>
+                    <option value="dx12">DirectX 12 (Windows Native)</option>
+                  </select>
+                </div>
+
+                <div class="field-group">
+                  <div class="field-label">
+                    <span class="field-label-left"><svg class="ico ico-xs"><use href="#i-bolt"/></svg> ALLOCATED MEMORY</span>
+                    <strong class="value-chip">Native GPU (Direct Alloc)</strong>
+                  </div>
+                  <span class="field-hint">Zero Java Garbage Collection. Dynamic native memory allocation (~500MB RAM).</span>
+                </div>
+
+                <div class="form-actions">
+                  <button type="button" class="btn btn-crimson btn-wide" id="rustProfileSaveBtn">Create Rust Profile</button>
+                  <button type="button" class="btn glass-btn" id="rustProfileCancelBtn">Cancel</button>
+                </div>
+              </div>
+
+              <div class="presets-col">
+                <div class="presets-title"><svg class="ico ico-sm"><use href="#i-layers"/></svg> SELECT HORIZON ENGINE PRESET</div>
+                <div class="version-posters-grid" id="rustVersionPostersGrid"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="view-section" id="view-settings">
           <div class="section-header-row">
             <h2 class="section-title"><span style="color:var(--crimson-500); margin-right:6px;">/</span>Settings</h2>
@@ -555,9 +696,17 @@
                 <svg class="ico ico-sm"><use href="#i-monitor"/></svg>
                 <span>GAME WINDOW</span>
               </button>
+              <button type="button" class="settings-tab-btn" data-settings-tab="rust">
+                <svg class="ico ico-sm"><use href="#i-chip"/></svg>
+                <span>RUST ENGINE</span>
+              </button>
               <button type="button" class="settings-tab-btn" data-settings-tab="folders">
                 <svg class="ico ico-sm"><use href="#i-folder"/></svg>
                 <span>FOLDERS</span>
+              </button>
+              <button type="button" class="settings-tab-btn" data-settings-tab="about">
+                <svg class="ico ico-sm"><use href="#i-star"/></svg>
+                <span>ABOUT &amp; UPDATES</span>
               </button>
             </div>
 
@@ -593,6 +742,19 @@
               <!-- TAB: LOOK & SOCIAL -->
               <div class="settings-tab-pane" data-settings-pane="look">
                 <div class="settings-group-label">DISCORD RICH PRESENCE &amp; INTERFACE</div>
+                <div class="bracket-card" id="themeSelectorCard">
+                  <div class="bracket-card-left">
+                    <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-monitor"/></svg></div>
+                    <div class="settings-row-text">
+                      <div class="settings-label-title">Theme</div>
+                      <div class="settings-label-sub">Light (default) or Dark. Changes instantly.</div>
+                    </div>
+                  </div>
+                  <div class="theme-seg" id="themeSelector">
+                    <button type="button" class="theme-seg-btn" data-theme-choice="light" id="themeLightBtn">Light</button>
+                    <button type="button" class="theme-seg-btn" data-theme-choice="dark" id="themeDarkBtn">Dark</button>
+                  </div>
+                </div>
                 <div class="bracket-card">
                   <div class="bracket-card-left">
                     <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-chat"/></svg></div>
@@ -617,7 +779,7 @@
                   </div>
                 </div>
 
-                <div class="bracket-card">
+                <div class="bracket-card legacy-style-row">
                   <div class="bracket-card-left">
                     <div class="settings-row-text">
                       <div class="settings-label-title">UI Style</div>
@@ -688,6 +850,47 @@
                     <button type="button" class="btn" id="wpPick">Choose</button>
                     <button type="button" class="btn" id="wpClear">Remove</button>
                     <input type="file" id="wpFile" accept="image/png,image/jpeg,image/webp" style="display:none" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- TAB: RUST ENGINE -->
+              <div class="settings-tab-pane" data-settings-pane="rust">
+                <div class="settings-group-label">RUST NATIVE ENGINE (HORIZON)</div>
+                <div class="rust-engine-box" id="rustEngineSettings">
+                  <div class="bracket-card">
+                    <div class="bracket-card-left">
+                      <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-chip"/></svg></div>
+                      <div class="settings-row-text">
+                        <div class="settings-label-title">Graphics Backend</div>
+                        <div class="settings-label-sub">Which GPU API the wgpu renderer uses.</div>
+                      </div>
+                    </div>
+                    <select id="rustGraphicsBackend" class="inex-select" style="width:180px;">
+                      <option value="auto">Auto</option>
+                      <option value="dx12">DirectX 12</option>
+                      <option value="vulkan">Vulkan</option>
+                    </select>
+                  </div>
+                  <div class="bracket-card">
+                    <div class="bracket-card-left">
+                      <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-folder"/></svg></div>
+                      <div class="settings-row-text">
+                        <div class="settings-label-title">Rust Game Directory</div>
+                        <div class="settings-label-sub">Where Rust instances keep their worlds and settings.</div>
+                      </div>
+                    </div>
+                    <input type="text" id="rustGameDirInput" class="inex-input" style="width:260px;" placeholder="Default (.cryoxclient/rust)" />
+                  </div>
+                  <div class="bracket-card">
+                    <div class="bracket-card-left">
+                      <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-image"/></svg></div>
+                      <div class="settings-row-text">
+                        <div class="settings-label-title">Sync Resource Packs with Java profiles</div>
+                        <div class="settings-label-sub">Use the same resource packs in Rust and Java profiles.</div>
+                      </div>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="rustSyncPacksToggle" /><span class="slider-toggle"></span></label>
                   </div>
                 </div>
               </div>
@@ -877,6 +1080,73 @@
                     </div>
                   </div>
                   <button type="button" class="btn btn-sm glass-btn" data-open-dir="javaDir">Open</button>
+                </div>
+              </div>
+
+              <!-- TAB: ABOUT & UPDATES -->
+              <div class="settings-tab-pane" data-settings-pane="about">
+                <div class="settings-group-label">CLIENT INFORMATION &amp; DEVELOPER</div>
+                <div class="bracket-card" style="align-items:flex-start;">
+                  <div class="bracket-card-left" style="gap:16px;">
+                    <img src="inex-logo.png" alt="Cryox Logo" style="width:48px; height:48px; border-radius:12px; border:1px solid rgba(225,29,72,0.35); flex-shrink:0;" />
+                    <div>
+                      <div class="bracket-title" style="font-size:17px;">CRYOX CLIENT <span class="value-chip" style="font-size:11px; margin-left:6px;">v1.1.0 Release</span></div>
+                      <div class="bracket-sub" style="margin-top:4px; max-width:480px; line-height:1.4;">
+                        High-performance black &amp; crimson Minecraft launcher powered by pure Rust Horizon engine, Fabric/Forge runtime, Playit tunneling &amp; holographic skin synchronization.
+                      </div>
+                      <div style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+                        <span style="font-size:12px; color:var(--text-secondary); font-weight:700;">Developed with ❤️ by <strong style="color:var(--text-primary);">inrwxyz</strong></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div style="display:flex; flex-direction:column; gap:8px; flex-shrink:0;">
+                    <button type="button" class="btn btn-sm btn-crimson" id="openGithubProfileBtn">
+                      <svg class="ico ico-xs"><use href="#i-user"/></svg> GitHub Profile
+                    </button>
+                    <button type="button" class="btn btn-sm glass-btn" id="openGithubRepoBtn">
+                      <svg class="ico ico-xs"><use href="#i-cube"/></svg> Source Repo
+                    </button>
+                  </div>
+                </div>
+
+                <div class="settings-group-label" style="margin-top:8px;">LAUNCHER UPDATES</div>
+
+                <!-- Auto update toggle -->
+                <div class="bracket-card">
+                  <div class="bracket-card-left">
+                    <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-bolt"/></svg></div>
+                    <div>
+                      <div class="bracket-title">Automatic Update Checks</div>
+                      <div class="bracket-sub">Check for CRYOX CLIENT updates automatically in the background</div>
+                    </div>
+                  </div>
+                  <span class="switch">
+                    <input type="checkbox" id="autoUpdateToggleInput" checked />
+                    <span class="slider-toggle"></span>
+                  </span>
+                </div>
+
+                <!-- Update checker card -->
+                <div class="bracket-card" style="flex-direction:column; align-items:stretch; gap:14px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="bracket-card-left">
+                      <div class="bracket-ico"><svg class="ico ico-sm"><use href="#i-refresh"/></svg></div>
+                      <div>
+                        <div class="bracket-title">Update Status</div>
+                        <div class="bracket-sub" id="updateStatusSubtitle">Installed: CRYOX CLIENT v1.1.0 (Latest)</div>
+                      </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-crimson" id="checkUpdatesBtn">
+                      <svg class="ico ico-xs"><use href="#i-refresh"/></svg> Check for Updates
+                    </button>
+                  </div>
+
+                  <div id="updateStatusBox" style="display:none; padding:12px 14px; border-radius:10px; background:rgba(0,0,0,0.35); border:1px solid var(--border-subtle); font-size:12.5px;">
+                    <div id="updateStatusMsg" style="font-weight:700;"></div>
+                    <div id="updateActionArea" style="margin-top:10px; display:none;">
+                      <button type="button" class="btn btn-sm btn-crimson" id="downloadUpdateBtn"><svg class="ico ico-xs"><use href="#i-download"/></svg> Download &amp; Install Update</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

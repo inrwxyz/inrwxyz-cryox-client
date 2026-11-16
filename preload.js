@@ -122,6 +122,11 @@ contextBridge.exposeInMainWorld('inexAPI', {
   onP2PKick: cb => ipcRenderer.on('event:p2p-kick', (_, data) => cb(data)),
   onAccessState: cb => ipcRenderer.on('event:access-state', (_, data) => cb(data)),
 
+  // Horizon (Rust Native Engine)
+  listRustVersions: () => ipcRenderer.invoke('rust:listVersions'),
+  installRust: payload => ipcRenderer.invoke('rust:install', payload),
+  launchRust: payload => ipcRenderer.invoke('rust:launch', payload),
+
   onInstallProgress: cb => ipcRenderer.on('event:install-progress', (_, data) => cb(data)),
   onGameLog: cb => ipcRenderer.on('event:game-log', (_, entry) => cb(entry)),
   onGameExit: cb => ipcRenderer.on('event:game-exit', (_, info) => cb(info)),

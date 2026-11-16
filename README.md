@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows)
 ![Framework](https://img.shields.io/badge/Framework-Tauri%20v2-FFC131?style=flat-square&logo=tauri)
 ![Backend](https://img.shields.io/badge/Backend-100%25%20Native%20Rust-DEA584?style=flat-square&logo=rust)
-![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
+![License](https://img.shields.io/badge/License-GPL--3.0%20%2F%20MIT-blue?style=flat-square)
 
 ---
 
@@ -120,10 +120,25 @@ The compiled binary and NSIS setup installer (`CRYOX CLIENT_<version>_x64-setup.
 
 ---
 
+## 📜 Third-Party Open Source Credits & Acknowledgements
+
+CRYOX CLIENT integrates with and builds upon several exceptional open-source projects:
+
+- **[Project Horizon](https://github.com/horizon-rust/horizon)**: A pure Rust, zero-Java reimplementation of the Minecraft client utilizing the `wgpu` graphics pipeline. Licensed under **LGPL-3.0 / GPL-3.0**.
+  - **Cryox Client Extensions & Modifications** (`src-tauri/src/horizon.rs`):
+    - Added offline (local) account session bypass & player UUID spoofing.
+    - Added centralized shared Minecraft resources discovery (`--resources`) eliminating external launcher dependency prompts.
+    - Added isolated instance directories (`rust_engine/instances/<profile_id>`).
+    - Added silent Windows background execution (console window suppression via `CREATE_NO_WINDOW`).
+    - Added dynamic WGPU graphics backend configuration (DirectX 12 / Vulkan / OpenGL).
+    - Added Discord Rich Presence game telemetry hooks.
+
+---
+
 ## 👨‍💻 Author
 
 Developed by **[@inrwxyz](https://github.com/inrwxyz)** — Cryox Studios.
 
-## 📄 License
+## 📄 License & Open-Source Compliance
 
-Released under the MIT License.
+CRYOX CLIENT is open-source software licensed under the **GNU General Public License v3.0 (GPL-3.0)** / **MIT**. All integrated and modified components complying with LGPL-3.0 / GPL-3.0 preserve original copyright notices and third-party attribution headers.

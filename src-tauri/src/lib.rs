@@ -19,6 +19,7 @@ use std::time::Duration;
 
 pub mod accounts;
 pub mod code_access;
+pub mod horizon;
 pub mod discord;
 pub mod dpapi;
 pub mod hud;
@@ -466,6 +467,38 @@ async fn inex_invoke(
         }
         "discord:status" => {
             return Ok(json!(discord::get_status()));
+        }
+        "rust:listVersions" | "listRustVersions" => {
+            let mgr = settings::SettingsManager::new();
+            let settings = mgr.get_settings();
+            let config_dir = settings.get("configDir").and_then(|s| s.as_str()).unwrap_or(".");
+            let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
+            return horizon::list_versions(config_dir, game_data_dir).await;
+        }
+        "rust:install" | "installRust" => {
+            let payload = args.first().cloned().unwrap_or(Value::Null);
+            let mgr = settings::SettingsManager::new();
+            let settings = mgr.get_settings();
+            let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
+            return horizon::install_version(app.clone(), game_data_dir, &payload).await;
+        }
+        "rust:launch" | "launchRust" => {
+            let payload = args.first().cloned().unwrap_or(Value::Null);
+            let mgr = settings::SettingsManager::new();
+            let settings = mgr.get_settings();
+            let config_dir = settings.get("configDir").and_then(|s| s.as_str()).unwrap_or(".");
+            let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
+            return horizon::launch_profile(app.clone(), config_dir, game_data_dir, &payload).await;
+        }
+        "rust:openFolder" | "openRustFolder" => {
+            let profile_id = args.first().and_then(|v| v.as_str()).unwrap_or("default");
+            let mgr = settings::SettingsManager::new();
+            let settings = mgr.get_settings();
+            let game_data_dir = settings.get("gameDataDir").and_then(|s| s.as_str()).unwrap_or(".");
+            let instance_dir = horizon::get_instances_dir(game_data_dir).join(profile_id);
+            let _ = std::fs::create_dir_all(&instance_dir);
+            let _ = std::process::Command::new("explorer").arg(&instance_dir).spawn();
+            return Ok(json!({ "success": true, "path": instance_dir.to_string_lossy() }));
         }
         "shell:openDir" => {
             if let Some(key) = args.first().and_then(|v| v.as_str()) {

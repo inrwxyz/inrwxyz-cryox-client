@@ -140,13 +140,17 @@ async function main() {
   writeJar(out, path.join(here, 'manifest.txt'), jarOut);
   console.log('BUILD OK ->', jarOut);
 
-  // Launcher-er pashe agent/ folder-e copy (src/main/agent/)
-  const mainDir = path.join(here, '..', 'src', 'main');
-  if (fs.existsSync(mainDir)) {
-    const target = path.join(mainDir, 'agent');
-    fs.mkdirSync(target, { recursive: true });
-    fs.copyFileSync(jarOut, path.join(target, 'inex-cosmetics-agent.jar'));
-    console.log('Copied ->', path.join(target, 'inex-cosmetics-agent.jar'));
+  // Copy to all runtime & resource folders
+  const copies = [
+    path.join(here, '..', 'src', 'main', 'agent', 'inex-cosmetics-agent.jar'),
+    path.join(here, '..', 'src', 'default-mods', 'inex-cosmetics-agent.jar'),
+    path.join(here, '..', 'dist-ui', 'default-mods', 'inex-cosmetics-agent.jar'),
+    path.join(here, '..', 'src-tauri', 'resources', 'inex-cosmetics-agent.jar'),
+  ];
+  for (const dst of copies) {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(jarOut, dst);
+    console.log('Copied ->', dst);
   }
 }
 

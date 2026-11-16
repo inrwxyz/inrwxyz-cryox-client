@@ -61,10 +61,441 @@
     });
   }
 
+  // ---------- CRYOX theme (light default / dark) ----------
+  function getCryoxTheme() {
+    try { return localStorage.getItem('cryox_theme') === 'dark' ? 'dark' : 'light'; } catch (_) { return 'light'; }
+  }
+  function applyCryoxTheme(theme) {
+    const t = theme === 'dark' ? 'dark' : 'light';
+    document.body.setAttribute('data-theme', t);
+    document.documentElement.setAttribute('data-theme', t);
+    document.querySelectorAll('.theme-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.themeChoice === t));
+  }
+  function setCryoxTheme(theme) {
+    try { localStorage.setItem('cryox_theme', theme === 'dark' ? 'dark' : 'light'); } catch (_) {}
+    applyCryoxTheme(theme);
+  }
+
+  // ---------- Rust Native Engine (Horizon) ----------
+  const RUST_BUILDS_FALLBACK = [
+    { id: 'horizon-26.3', name: 'Horizon 26.3', channel: 'Stable', desc: 'Stable Horizon build. Pure Rust wgpu renderer, vanilla parity.', installed: false },
+    { id: 'horizon-nightly', name: 'Horizon Nightly', channel: 'Nightly', desc: 'Latest experimental build. Newest features, may be unstable.', installed: false }
+  ];
+  const rustSettingsKey = 'cryox_rust_settings';
+  function loadRustSettings() {
+    try { return Object.assign({ backend: 'auto', gameDir: '', syncPacks: true }, JSON.parse(localStorage.getItem(rustSettingsKey) || '{}')); }
+    catch (_) { return { backend: 'auto', gameDir: '', syncPacks: true }; }
+  }
+  function saveRustSettings(partial) {
+    const next = Object.assign(loadRustSettings(), partial);
+    try { localStorage.setItem(rustSettingsKey, JSON.stringify(next)); } catch (_) {}
+    return next;
+  }
+  async function rustApiCall(name, payload) {
+    if (api && typeof api[name] === 'function') return api[name](payload);
+    if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+      const channelMap = {
+        listRustVersions: 'rust:listVersions',
+        installRust: 'rust:install',
+        launchRust: 'rust:launch',
+        openRustFolder: 'rust:openFolder'
+      };
+      const chan = channelMap[name] || name;
+      return window.__TAURI__.core.invoke('inex_invoke', { channel: chan, args: payload !== undefined ? [payload] : [] });
+    }
+    throw new Error('Rust backend command "' + name + '" is not connected yet.');
+  }
+  const rustProfilesKey = 'cryox_rust_profiles';
+  function loadRustProfiles() {
+    try {
+      const d = JSON.parse(localStorage.getItem(rustProfilesKey) || '{}');
+      const list = Array.isArray(d.list) ? d.list : [];
+      return { list, active: list.some(p => p.id === d.active) ? d.active : (list[0] ? list[0].id : null) };
+    } catch (_) { return { list: [], active: null }; }
+  }
+  function saveRustProfiles(d) { try { localStorage.setItem(rustProfilesKey, JSON.stringify(d)); } catch (_) {} }
+  let rustBuildsCache = RUST_BUILDS_FALLBACK;
+  const rustBuildName = id => { const b = rustBuildsCache.find(x => x.id === id); return b ? (b.name || b.id) : id; };
+
+  function renderRustHome() {
+    const d = loadRustProfiles();
+    const prof = d.list.find(p => p.id === d.active) || null;
+    const rs = loadRustSettings();
+    const backendNames = { auto: 'Auto', dx12: 'DirectX 12', vulkan: 'Vulkan' };
+    if ($('rustBackendBadge')) $('rustBackendBadge').textContent = backendNames[rs.backend] || 'Auto';
+    $('rustBuildBadge').textContent = prof ? rustBuildName(prof.build) : 'No profile selected';
+
+    const isRunning = prof && state.runningProfileIds && state.runningProfileIds.has(prof.id);
+    const splitBox = $('rustLaunchSplitBox');
+    if (splitBox) splitBox.classList.toggle('running', Boolean(isRunning));
+
+    if (isRunning) {
+      $('rustStatusBadge').textContent = 'Status: Game Running';
+      $('rustMainPlayTitle').textContent = 'STOP GAME';
+      $('rustMainPlaySub').textContent = `${prof.name} \u2022 Running (Click to stop)`;
+      if ($('rustMainPlayHint')) $('rustMainPlayHint').textContent = 'Click to stop the running Horizon engine';
+    } else {
+      $('rustStatusBadge').textContent = prof ? ('Profile: ' + prof.name) : 'Create a Rust profile to play';
+      $('rustMainPlayTitle').textContent = prof ? 'PLAY' : 'CREATE RUST PROFILE';
+      $('rustMainPlaySub').textContent = prof ? (prof.name + ' \u2022 ' + rustBuildName(prof.build)) : 'No Rust profile yet. Click to create one.';
+      if ($('rustMainPlayHint')) $('rustMainPlayHint').textContent = 'Zero JVM \u2022 Horizon native engine';
+    }
+
+    const dd = $('rustProfileDropdown');
+    dd.innerHTML = '';
+    if (!d.list.length) {
+      const it = document.createElement('div'); it.className = 'dropdown-item';
+      it.innerHTML = '<div style="font-weight:700; font-size:13px;">+ Create your first Rust profile</div>';
+      it.addEventListener('click', () => { dd.classList.remove('open'); showRustSub('create'); });
+      dd.appendChild(it);
+    }
+    d.list.forEach(p => {
+      const it = document.createElement('div'); it.className = 'dropdown-item' + (p.id === d.active ? ' active' : '');
+      const t = document.createElement('div'); t.style.cssText = 'font-weight:700; font-size:13px;'; t.textContent = p.name;
+      const s = document.createElement('div'); s.style.cssText = 'font-size:11px; opacity:.7;'; s.textContent = rustBuildName(p.build);
+      const wrap = document.createElement('div'); wrap.appendChild(t); wrap.appendChild(s); it.appendChild(wrap);
+      it.addEventListener('click', () => { saveRustProfiles({ list: d.list, active: p.id }); dd.classList.remove('open'); renderRustHome(); });
+      dd.appendChild(it);
+    });
+
+    const row = $('rustQuickProfilesRow');
+    if (row) {
+      row.querySelectorAll('.rust-pill').forEach(n => n.remove());
+    }
+  }
+  const RUST_PRESETS = [
+    { id: 'nightly', title: 'Horizon Nightly', subtitle: 'MC 26.3 Experimental', badge: 'LATEST', icon: 'star' },
+    { id: 'v0.2.97', title: 'Horizon 0.2.97', subtitle: 'Vanilla Parity Stable', badge: 'STABLE', icon: 'layers' },
+    { id: 'vulkan-fast', title: 'Vulkan Engine', subtitle: 'Ultra High FPS (wgpu)', badge: 'FAST', icon: 'bolt', backend: 'vulkan' },
+    { id: 'dx12-native', title: 'DirectX 12', subtitle: 'Native Windows Pipeline', badge: 'NATIVE', icon: 'monitor', backend: 'dx12' },
+  ];
+
+  function renderRustPresets(selectedBuild) {
+    const grid = $('rustVersionPostersGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    RUST_PRESETS.forEach(p => {
+      const isSel = (p.id === selectedBuild) || (p.id === 'nightly' && String(selectedBuild).includes('nightly'));
+      const card = document.createElement('div');
+      card.className = 'engine-preset-card' + (isSel ? ' selected' : '');
+      card.innerHTML = `
+        <div class="preset-icon-box">${ico(p.icon, 'ico')}</div>
+        <div class="preset-info">
+          <div class="preset-ver">${esc(p.title)}</div>
+          <div class="preset-sub">${esc(p.subtitle)}</div>
+        </div>
+        <span class="preset-badge">${esc(p.badge)}</span>
+      `;
+      card.addEventListener('click', () => {
+        const sel = $('rustProfileBuildSelect');
+        if (p.backend && $('rustProfileBackendSelect')) {
+          $('rustProfileBackendSelect').value = p.backend;
+        }
+        if (sel && (p.id === 'nightly' || p.id === 'v0.2.97')) {
+          let found = Array.from(sel.options).find(o => o.value === p.id || o.value.includes(p.id));
+          if (found) sel.value = found.value;
+        }
+        renderRustPresets(p.id);
+        const nameInp = $('rustProfileNameInput');
+        if (nameInp && (!nameInp.value || nameInp.value.startsWith('Horizon-'))) {
+          nameInp.value = p.title.replace(/\s+/g, '-');
+        }
+      });
+      grid.appendChild(card);
+    });
+  }
+
+  let editingRustProfileId = null;
+
+  function populateRustCreateForm(editingProfile = null) {
+    editingRustProfileId = editingProfile ? editingProfile.id : null;
+    const sel = $('rustProfileBuildSelect');
+    if (sel) {
+      sel.innerHTML = '';
+      const builds = (rustBuildsCache && rustBuildsCache.length) ? rustBuildsCache : RUST_BUILDS_FALLBACK;
+      builds.forEach(b => {
+        const o = document.createElement('option');
+        o.value = b.id;
+        o.textContent = b.name || b.id;
+        sel.appendChild(o);
+      });
+      if (editingProfile && editingProfile.build) {
+        sel.value = editingProfile.build;
+      } else if (sel.options.length > 0 && !sel.value) {
+        sel.selectedIndex = 0;
+      }
+    }
+    const curBuild = (sel && sel.value) || 'nightly';
+    const nameInp = $('rustProfileNameInput');
+    if (nameInp) {
+      nameInp.value = editingProfile ? editingProfile.name : (nameInp.value || 'Horizon-Nightly');
+    }
+    if ($('rustProfileBackendSelect')) {
+      $('rustProfileBackendSelect').value = (editingProfile && editingProfile.backend) || 'auto';
+    }
+    if ($('rustCreateHeaderTitle')) {
+      $('rustCreateHeaderTitle').textContent = editingProfile ? `Edit ${editingProfile.name}` : 'Create Rust Profile';
+    }
+    if ($('rustCreateFormModeLabel')) {
+      $('rustCreateFormModeLabel').textContent = editingProfile ? 'EDIT RUST PROFILE' : 'CREATE RUST PROFILE';
+    }
+    if ($('rustProfileSaveBtn')) {
+      $('rustProfileSaveBtn').textContent = editingProfile ? 'Save Changes' : 'Create Rust Profile';
+    }
+    renderRustPresets(curBuild);
+    if (nameInp) nameInp.focus();
+  }
+
+  function showRustSub(which, extra = null) {
+    $('rustHomeSubView').style.display = which === 'home' ? 'flex' : 'none';
+    $('view-rust').classList.toggle('rust-home-on', which === 'home');
+    $('rustProfilesSubView').style.display = which === 'profiles' ? 'flex' : 'none';
+    if ($('rustCreateProfileSubView')) {
+      $('rustCreateProfileSubView').style.display = which === 'create' ? 'flex' : 'none';
+    }
+    if (which === 'home') renderRustHome();
+    else if (which === 'profiles') renderRustProfilesPage();
+    else if (which === 'create') populateRustCreateForm(extra);
+  }
+
+  function renderRustProfilesPage() {
+    const grid = $('rustProfilesGrid');
+    if (!grid) return;
+    const d = loadRustProfiles();
+    const q = String(($('rustProfileSearchInput') && $('rustProfileSearchInput').value) || '').toLowerCase().trim();
+    grid.innerHTML = '';
+    d.list.filter(p => !q || p.name.toLowerCase().includes(q) || rustBuildName(p.build).toLowerCase().includes(q)).forEach(p => {
+      const isSel = p.id === d.active;
+      const card = document.createElement('div');
+      card.className = 'profile-card' + (isSel ? ' active' : '');
+      const top = document.createElement('div'); top.className = 'profile-card-top';
+      const av = document.createElement('div'); av.className = 'profile-avatar'; av.textContent = '⚡';
+      const info = document.createElement('div'); info.className = 'profile-info';
+      const nm = document.createElement('div'); nm.className = 'profile-name'; nm.textContent = p.name;
+      const meta = document.createElement('div'); meta.className = 'profile-meta-line'; meta.textContent = 'Horizon (Rust) \u2022 ' + rustBuildName(p.build);
+      info.appendChild(nm); info.appendChild(meta);
+      top.appendChild(av); top.appendChild(info);
+      if (isSel) { const bd = document.createElement('div'); bd.className = 'active-check-badge'; bd.innerHTML = ico('check', 'ico-xs'); top.appendChild(bd); }
+      top.addEventListener('click', () => { saveRustProfiles({ list: d.list, active: p.id }); renderRustProfilesPage(); });
+      const acts = document.createElement('div'); acts.className = 'profile-card-actions';
+      const isRunning = state.runningProfileIds && state.runningProfileIds.has(p.id);
+      const play = document.createElement('button');
+      play.type = 'button';
+      play.className = 'btn btn-sm btn-launch ' + (isRunning ? 'btn-stop' : 'btn-play');
+      play.innerHTML = isRunning ? (ico('square') + 'Stop') : (ico('play') + 'Play');
+      play.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        saveRustProfiles({ list: d.list, active: p.id });
+        renderRustHome();
+        await playRustActive();
+      });
+
+      const divider = document.createElement('span'); divider.className = 'action-divider';
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'icon-btn';
+      editBtn.title = 'Edit profile';
+      editBtn.innerHTML = ico('edit');
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openRustCreateForm(p);
+      });
+
+      const folderBtn = document.createElement('button');
+      folderBtn.type = 'button';
+      folderBtn.className = 'icon-btn';
+      folderBtn.title = 'Open profile folder';
+      folderBtn.innerHTML = ico('folder');
+      folderBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+          await rustApiCall('openRustFolder', p.id);
+          showToast('Folder opened');
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      });
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'icon-btn danger';
+      del.title = 'Delete Rust profile';
+      del.innerHTML = ico('trash');
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nl = d.list.filter(x => x.id !== p.id);
+        saveRustProfiles({ list: nl, active: d.active === p.id ? (nl[0] ? nl[0].id : null) : d.active });
+        renderRustProfilesPage();
+        renderRustHome();
+      });
+
+      acts.appendChild(play);
+      acts.appendChild(divider);
+      acts.appendChild(editBtn);
+      acts.appendChild(folderBtn);
+      acts.appendChild(del);
+      card.appendChild(top);
+      card.appendChild(acts);
+      grid.appendChild(card);
+    });
+    const tile = document.createElement('div'); tile.className = 'add-card-tile';
+    tile.innerHTML = ico('plus') + '<span>Create profile</span>';
+    tile.addEventListener('click', () => openRustCreateForm());
+    grid.appendChild(tile);
+  }
+
+  function openRustCreateForm(editingProfile = null) {
+    showRustSub('create', editingProfile);
+  }
+
+  function saveRustProfileFromForm() {
+    const nameInp = $('rustProfileNameInput');
+    const name = nameInp ? nameInp.value.trim() : '';
+    if (!name) { showToast('Give the Rust profile a name.', 'info'); return; }
+    const sel = $('rustProfileBuildSelect');
+    const build = (sel && sel.value) || 'nightly';
+    const backend = ($('rustProfileBackendSelect') && $('rustProfileBackendSelect').value) || 'auto';
+    const d = loadRustProfiles();
+
+    if (editingRustProfileId) {
+      const existing = d.list.find(p => p.id === editingRustProfileId);
+      if (existing) {
+        existing.name = name;
+        existing.build = build;
+        existing.backend = backend;
+        saveRustProfiles({ list: d.list, active: editingRustProfileId });
+        if (backend && backend !== 'auto') {
+          saveRustSettings({ backend });
+        }
+        editingRustProfileId = null;
+        showToast('Rust profile updated: ' + name, 'success');
+        showRustSub('profiles');
+        renderRustHome();
+        return;
+      }
+    }
+
+    const id = 'rp-' + Date.now().toString(36);
+    d.list.push({ id, name, build, backend });
+    saveRustProfiles({ list: d.list, active: id });
+    if (backend && backend !== 'auto') {
+      saveRustSettings({ backend });
+    }
+    showToast('Rust profile created: ' + name, 'success');
+    showRustSub('profiles');
+    renderRustHome();
+  }
+
+  async function playRustActive() {
+    const acc = getActiveAccount();
+    if (!acc) {
+      showToast('Add an account in the Accounts tab before launching.', 'error');
+      switchNavigation('accounts');
+      return;
+    }
+
+    const d = loadRustProfiles();
+    const prof = d.list.find(p => p.id === d.active);
+    if (!prof) { openRustCreateForm(); return; }
+
+    if (state.runningProfileIds && state.runningProfileIds.has(prof.id)) {
+      try {
+        await api.stopProfile(prof.id);
+        state.runningProfileIds.delete(prof.id);
+        syncGameRunningMode();
+        renderRustHome();
+        renderRustProfilesPage();
+        showToast('Game stopped');
+      } catch (err) {
+        showToast('Failed to stop game: ' + err.message, 'error');
+      }
+      return;
+    }
+
+    try {
+      state.activityName = prof.name;
+      progressShow(`Preparing ${prof.name}`, 20, 'Checking Horizon engine & files…');
+
+      const res = await rustApiCall('launchRust', { id: prof.build, profile: prof, settings: loadRustSettings() });
+      if (res && (res.launched || res.success)) {
+        state.runningProfileIds.add(prof.id);
+        syncGameRunningMode();
+        renderRustHome();
+        renderRustProfilesPage();
+        progressDone('Game launched');
+        showToast('Game launched', 'success');
+        if (state.settings && state.settings.closeBehavior === 'minimize') {
+          try { api.minimizeWindow(); } catch (_) {}
+        }
+      } else {
+        progressHide();
+      }
+    } catch (err) {
+      progressHide();
+      appendConsoleLog(`[HORIZON ERROR] ${cleanErrorMessage(err.message)}`, 'error');
+      showToast(err.message, 'error');
+    } finally {
+      state.activityName = '';
+    }
+  }
+
+  async function renderRustView() {
+    const list = $('rustVersionsList');
+    if (!list) return;
+    let builds = RUST_BUILDS_FALLBACK;
+    try {
+      const r = await rustApiCall('listRustVersions');
+      if (Array.isArray(r) && r.length) builds = r;
+      else if (r && Array.isArray(r.versions) && r.versions.length) builds = r.versions;
+    } catch (_) { /* backend not wired: show default Horizon builds */ }
+    rustBuildsCache = builds;
+    renderRustHome();
+    list.innerHTML = '';
+    builds.forEach(b => {
+      const card = document.createElement('div');
+      card.className = 'rust-card';
+      const ico = document.createElement('div'); ico.className = 'rust-card-ico'; ico.textContent = '⚡';
+      const body = document.createElement('div'); body.className = 'rust-card-body';
+      const title = document.createElement('div'); title.className = 'rust-card-title';
+      title.appendChild(document.createTextNode(b.name || b.id));
+      const tag = document.createElement('span'); tag.className = 'rust-tag' + (b.installed ? ' ok' : '');
+      tag.textContent = b.installed ? 'INSTALLED' : (b.channel || 'AVAILABLE').toUpperCase();
+      title.appendChild(tag);
+      const sub = document.createElement('div'); sub.className = 'rust-card-sub'; sub.textContent = b.desc || 'Horizon native build';
+      body.appendChild(title); body.appendChild(sub);
+      const actions = document.createElement('div'); actions.className = 'rust-card-actions';
+      const instBtn = document.createElement('button'); instBtn.type = 'button'; instBtn.className = 'btn'; instBtn.textContent = b.installed ? 'Reinstall' : 'Install';
+      instBtn.addEventListener('click', async () => {
+        try {
+          instBtn.disabled = true;
+          instBtn.textContent = 'Installing…';
+          showToast('Downloading & installing ' + (b.name || b.id) + '…', 'info');
+          await rustApiCall('installRust', { id: b.id, downloadUrl: b.downloadUrl });
+          showToast((b.name || b.id) + ' installed successfully!', 'success');
+          renderRustView();
+        } catch (err) {
+          instBtn.disabled = false;
+          instBtn.textContent = b.installed ? 'Reinstall' : 'Install';
+          showToast(err.message, 'error');
+        }
+      });
+      actions.appendChild(instBtn);
+      card.appendChild(ico); card.appendChild(body); card.appendChild(actions);
+      list.appendChild(card);
+    });
+  }
+  function renderRustSettings() {
+    const r = loadRustSettings();
+    if ($('rustGraphicsBackend')) $('rustGraphicsBackend').value = r.backend;
+    if ($('rustGameDirInput')) $('rustGameDirInput').value = r.gameDir || '';
+    if ($('rustSyncPacksToggle')) $('rustSyncPacksToggle').checked = !!r.syncPacks;
+  }
+
   function applyAppearanceSettings() {
     const blurPx = Number(state.settings.glassIntensity) || 24;
     document.documentElement.style.setProperty('--glass-blur', `${blurPx}px`);
-    document.body.dataset.theme = state.settings.uiTheme === 'nothing' ? 'nothing' : 'default';
+    applyCryoxTheme(getCryoxTheme());
     // Matrix theme options: corner shape, highlight style and highlight colour
     const mxHex = /^#[0-9a-f]{6}$/i.test(state.settings.matrixHlColor || '') ? state.settings.matrixHlColor : '#ffffff';
     const mxGlass = state.settings.matrixHlStyle === 'glass';
@@ -280,9 +711,15 @@
     } else if (targetNav === 'server') {
       if ($('view-server')) $('view-server').classList.add('active');
       if (window.InexServerUI) window.InexServerUI.show();
+    } else if (targetNav === 'rust') {
+      if ($('view-rust')) $('view-rust').classList.add('active');
+      renderRustView();
+      showRustSub('home');
     } else if (targetNav === 'settings') {
       if ($('view-settings')) $('view-settings').classList.add('active');
       renderSettingsView();
+      renderRustSettings();
+      applyCryoxTheme(getCryoxTheme());
     }
   }
 
@@ -398,6 +835,8 @@
         state.profiles = updated.profiles;
         state.activeProfileId = updated.activeProfileId;
         renderHomeView();
+        renderRustHome();
+        renderRustProfilesPage();
       });
       dropdown.appendChild(item);
     });
@@ -1150,18 +1589,39 @@
     if (!container) return;
     container.innerHTML = '';
 
+    const activeAcc = getActiveAccount();
+
+    if (state.skinSlots && state.skinSlots.length) {
+      state.skinSlots.forEach(s => {
+        if (!s.customSkinDataUrl) {
+          if (s.preset === 'crimson-phantom' || (s.name && s.name.includes('Crimson Phantom'))) {
+            s.name = 'Slot 1 — Steve';
+            s.model = 'classic';
+            s.preset = 'steve';
+          } else if (s.preset === 'obsidian-knight' || (s.name && s.name.includes('Obsidian Knight'))) {
+            s.name = 'Slot 2 — Alex';
+            s.model = 'slim';
+            s.preset = 'alex';
+          }
+        }
+      });
+    }
+
     const slots = state.skinSlots && state.skinSlots.length ? state.skinSlots : [
-      { id: 'slot-1', name: 'Slot 1 — Crimson Phantom', model: 'slim', preset: 'crimson-phantom', customSkinDataUrl: null, active: true },
-      { id: 'slot-2', name: 'Slot 2 — Obsidian Knight', model: 'slim', preset: 'obsidian-knight', customSkinDataUrl: null, active: false }
+      { id: 'slot-1', name: 'Slot 1 — Steve', model: 'classic', preset: 'steve', customSkinDataUrl: null, active: true },
+      { id: 'slot-2', name: 'Slot 2 — Alex', model: 'slim', preset: 'alex', customSkinDataUrl: null, active: false }
     ];
 
     slots.forEach(slot => {
       const card = document.createElement('div');
       card.className = 'skin-slot-card' + (slot.active ? ' active' : '');
       const modelLabel = slot.model === 'slim' ? 'SLIM (ALEX)' : 'CLASSIC (STEVE)';
+      const isOfficial = !slot.customSkinDataUrl && activeAcc && activeAcc.skinUrl;
       const sourceLabel = slot.customSkinDataUrl
         ? `<span style="color:#e8e8ee;">CUSTOM UPLOAD</span>`
-        : `PRESET: ${esc((slot.preset || 'crimson-phantom').toUpperCase())}`;
+        : isOfficial
+        ? `<span style="color:#38bdf8;">OFFICIAL MINECRAFT SKIN</span>`
+        : `DEFAULT: ${slot.model === 'slim' ? 'ALEX (SLIM)' : 'STEVE (CLASSIC)'}`;
 
       card.innerHTML = `
         <div class="skin-slot-head">
@@ -1252,7 +1712,12 @@
     return img;
   }
 
+  const STEVE_SKIN_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAdVBMVEUAAAAKvLwAzMwmGgokGAgrHg0zJBE/KhW3g2uzeV5SPYn///+qclmbY0mQWT8Af38AaGhVVVWUYD52SzOBUzmPXj5JJRBCHQp3QjVqQDA0JRIoKCg3Nzc/Pz9KSko6MYlBNZtGOqUDenoFiIgElZUApKQAr6/wvakZAAAAAXRSTlMAQObYZgAAAolJREFUeNrt1l1rHucZReFrj/whu5hSCCQtlOTE/f+/Jz4q9Cu0YIhLcFVpVg+FsOCVehi8jmZgWOzZz33DM4CXlum3gH95GgeAzQZVeL4gTm6Cbp4vqFkD8HwBazPY8wWbMq9utu3mNZ5fotVezbzOE3kBEFbaZuc8kb00NTMUbWJp678Xf2GV7RRtx1TDQQ6XBNvsmL2+2vHq1TftmMPIyAWujtN2cl274ua2jpVpZneXEjjo7XW1q53V9ds4ODO5xIuhvGHvfLI3aixauig415uuO2+vl9+cncfsFw25zL650fXn687jqnXuP68/X3+eV3zE7y6u9eB73MlfAcfbTf3yR8CfAX+if8S/H5/EAbAxj5LN48tULvEBOh8V1AageMTXe2YHAOwHbZxrzPkSR3+ffr8TR2JDzE/4Fj8CDgEwDsW+q+9GsR07hhg2CsALBgMo2v5wNxXnQXMeGQVW7gUAyKI2m6KDsJ8Au3++F5RZO+kKNQjQcLLWgjwUjBXLltFgWWMUUlviocBgNoxNGgMjSxiYAA7zgLFo2hgIENiDU8gQCzDOmViGFAsEuBcQSDCothhpJaDRA8E5fHqH2nTbYm5fHLo1V0u3B7DAuheoeScRYabjjjuzs17cHVaTrTXmK78m9swP34d9oK/dfeXSIH2PW/MXwPvxN/bJlxw8zlYAcEyeI6gNgA/O8P8neN8xe1IHP2gTzegjvhUDfuRygmwEs2GE4mkCDIAzm2R4yAuPsIdR9k8AvMc+3L9+2UEjo4WP0FpgP19O0MzCsqxIoMsdDBvYcQyGmO0ZJRoYCKjLJWY0BAhYwGUBCgkh8MRdOKt+ruqMwAB2OcEX94U1TPbYJP0PkyyAI1S6cSIAAAAASUVORK5CYII=';
+  const ALEX_SKIN_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAZlBMVEUAAAD////v2r/r0LDvu7HfxKLUt4/zqFiUyJKMvorrmD+GuYTljT97snjegS5xq26UlmuAglpvb29lZWV8Vz51UDhYWFhyTjZPT09sRi5kQSwjYiQrVChcOyc/Pz82NjYYOBYoKCgm8xoJAAAAAXRSTlMAQObYZgAAAwZJREFUeNrtlu1W6jAQRWtjWiaZtCC9/YgC8v4vec9Mg6Uur6b8ve6S0Lo8O2NYmClusOMGF7Nr8HKu2IoDTYPk44K6lvBciePNAm7mlTGz3G2voAaYZg9vFzCCjtnZqoHjAYHDJjAM1tqqgmR7Bahf9tFaA6zND6JwXRpxxosZIkz4uQzOWFmTrJPOUgdjOP1hzu7flmNrJe4wtCBoMgR1LVE1mNIYNbAurpafN5N5Xto8vZbl65PhWg0aRiU/C2Rpa0x5w/LHnjQwZVTgGk755+eyNMbWXDeukQIwMjaRm6qyJjmMtTAi1ziHF0OQQwsul+u1SJBnZsTbRJEgIqzxD8H1erksAt80MLTtCawFpvpScDqtKzhUYpA8yKgAv7Wq4GCripmT4PsKPFGIQxdjbFsPCPiDsbY6tAvBU2K+KRZiCHHquimC0ylGCoH8vjSmVEG4xb0Mmb2MYmGYpgH5boBA7iAIPuxL5CUtT0Q72u0wy6SDioVOosh3k5ggQIZgQB4iDITlOqwoFiaJwzJAcMJARhOShUCX3AGjWMWYYqHv+zghHntwPPaoWQJh58mLRe5FUSpQ6BenWDgi1B81rCAki0oIgiDvQRRlMkh+JdDgi2b78zieEUKEWglRG4gQp+8EEupTeOz78f39/U32n1oKb3iAQ642CWQfPlWAUAr3MtoQ2jck4XmTe7wL7ykPrFkJRkm9HCUuopF8CN6TXsGTEAjvt2+7Gu4Fl/N5xN+PMs6XCwZJLv4BER480MzHFsyfwi9ZpDNSYH7IIKcDPKB4iHSwPk7tVo974ZDYZ1VQ/PKfg9Nsddg6ouWfyCMNh2OqzBbBCdxXUDMq2Cq4r6CmDRVEoRvm4z4Q8OwowdmCbgDThEq8Jwg8pb4gSzANU5cY4l1ngCtDMM0NR4yYwfS5LzgoewXPXwuQ1bZDsIJJ2OJHPvcL49wQJEyGQI+5pV/o9Sj8IKcCSd31C5sFEhrv+gVrzAbBul9QINiwB+t+QdHWLBmyPgXtF8CtX5CO4LsK/gL4WlU0/HKH/gAAAABJRU5ErkJggg==';
+
   const DEFAULT_SKIN_PALETTES = {
+    'steve':           { hair: '#4a321d', skin: '#c68c59', eyes: '#2c358f', coat: '#00a29e', trim: '#00a29e', pants: '#2b307d', shoes: '#4e4e4e' },
+    'alex':            { hair: '#cf6b32', skin: '#e0ab88', eyes: '#4b7b3b', coat: '#5f873e', trim: '#443122', pants: '#443122', shoes: '#302720' },
     'crimson-phantom': { hair: '#080808', skin: '#f3d8c7', eyes: '#e11d48', coat: '#111111', trim: '#e11d48', pants: '#0a0a0a', shoes: '#be123c' },
     'obsidian-knight': { hair: '#111111', skin: '#e5c1a7', eyes: '#38bdf8', coat: '#1e1b4b', trim: '#6366f1', pants: '#111111', shoes: '#312e81' },
     'ash-valkyrie':    { hair: '#f4f4f6', skin: '#f5d0c5', eyes: '#f43f5e', coat: '#191919', trim: '#fb7185', pants: '#101010', shoes: '#9f1239' },
@@ -1261,7 +1726,7 @@
   const defaultSkinCache = {};
 
   function getDefaultSkinCanvas(presetId) {
-    const key = DEFAULT_SKIN_PALETTES[presetId] ? presetId : 'crimson-phantom';
+    const key = DEFAULT_SKIN_PALETTES[presetId] ? presetId : 'steve';
     if (defaultSkinCache[key]) return defaultSkinCache[key];
     const pal = DEFAULT_SKIN_PALETTES[key];
     const c = document.createElement('canvas');
@@ -1303,13 +1768,22 @@
     ctx.clearRect(0, 0, W, H);
     ctx.imageSmoothingEnabled = false;
 
-    const activeSlot = state.skinSlots.find(s => s.active) || state.skinSlots[0] || { model: 'slim', preset: 'crimson-phantom' };
+    const activeSlot = state.skinSlots.find(s => s.active) || state.skinSlots[0] || { model: 'classic', preset: 'steve' };
+    const activeAcc = getActiveAccount();
     let tex = null;
     if (activeSlot.customSkinDataUrl) {
       const img = getCachedImage(activeSlot.customSkinDataUrl);
       if (img && img.complete && img.naturalWidth >= 64) tex = img;
+    } else if (activeAcc && activeAcc.skinUrl) {
+      const img = getCachedImage(activeAcc.skinUrl);
+      if (img && img.complete && img.naturalWidth >= 64) tex = img;
     }
-    if (!tex) tex = getDefaultSkinCanvas(activeSlot.preset);
+    if (!tex) {
+      const defUrl = activeSlot.model === 'slim' ? ALEX_SKIN_DATA_URL : STEVE_SKIN_DATA_URL;
+      const img = getCachedImage(defUrl);
+      if (img && img.complete && img.naturalWidth >= 64) tex = img;
+    }
+    if (!tex) tex = getDefaultSkinCanvas(activeSlot.model === 'slim' ? 'alex' : (activeSlot.preset || 'steve'));
 
     const isSlim = activeSlot.model === 'slim';
     const tw = tex.width || tex.naturalWidth;
@@ -1530,7 +2004,7 @@
     if ($('settingGlassSlider'))$('settingGlassSlider').value = s.glassIntensity || 24;
     if ($('settingGlassValueLabel'))$('settingGlassValueLabel').textContent = `${s.glassIntensity || 24}px`;
     if ($('settingThemeSelect')) $('settingThemeSelect').value = s.uiTheme === 'nothing' ? 'nothing' : 'default';
-    if ($('matrixOptions')) $('matrixOptions').style.display = s.uiTheme === 'nothing' ? 'flex' : 'none';
+    if ($('matrixOptions')) $('matrixOptions').style.display = 'none';
     if ($('settingMatrixShape')) $('settingMatrixShape').value = s.matrixShape === 'default' ? 'default' : 'round';
     if ($('settingMatrixHlStyle')) $('settingMatrixHlStyle').value = s.matrixHlStyle === 'glass' ? 'glass' : 'solid';
     if ($('settingMatrixHlColor')) $('settingMatrixHlColor').value = s.matrixHlColor || '#ffffff';
@@ -1601,6 +2075,8 @@
         const refreshed = await api.listProfiles();
         state.profiles = refreshed.profiles;
         renderHomeView();
+        renderRustHome();
+        renderRustProfilesPage();
         progressDone('Game launched');
         showToast('Game launched', 'success');
         if (state.settings && state.settings.closeBehavior === 'minimize') {
@@ -1645,6 +2121,29 @@
       on(btn, 'click', () => switchNavigation(btn.getAttribute('data-nav')));
     });
 
+    // theme switch + Rust UI wiring
+    applyCryoxTheme(getCryoxTheme());
+    document.querySelectorAll('.theme-seg-btn').forEach(b => on(b, 'click', () => setCryoxTheme(b.dataset.themeChoice)));
+    on('rustGoToProfilesBtn', 'click', () => {
+      switchNavigation('rust');
+      showRustSub('profiles');
+    });
+    on('rustBackBtn', 'click', () => showRustSub('home'));
+    on('rustCreateProfileBtn', 'click', () => openRustCreateForm());
+    on('closeRustCreateProfileBtn', 'click', () => showRustSub('profiles'));
+    on('rustProfileSearchInput', 'input', () => renderRustProfilesPage());
+    on('rustMainPlayBtn', 'click', () => playRustActive());
+    on('rustLaunchDropdownBtn', 'click', e => { e.stopPropagation(); $('rustProfileDropdown').classList.toggle('open'); });
+    document.addEventListener('click', () => { if ($('rustProfileDropdown')) $('rustProfileDropdown').classList.remove('open'); });
+    on('rustProfileSaveBtn', 'click', () => saveRustProfileFromForm());
+    on('rustProfileCancelBtn', 'click', () => showRustSub('profiles'));
+    on('rustFullRefreshBtn', 'click', async () => { await renderRustView(); populateRustCreateForm(); });
+    on('rustProfileBuildSelect', 'change', e => { renderRustPresets(e.target.value); });
+    on('rustRefreshBtn', 'click', () => renderRustView());
+    on('rustGraphicsBackend', 'change', e => { saveRustSettings({ backend: e.target.value }); renderRustHome(); });
+    on('rustGameDirInput', 'change', e => saveRustSettings({ gameDir: e.target.value.trim() }));
+    on('rustSyncPacksToggle', 'change', e => saveRustSettings({ syncPacks: e.target.checked }));
+
     document.querySelectorAll('.settings-tab-btn').forEach(btn => {
       on(btn, 'click', () => {
         const target = btn.getAttribute('data-settings-tab');
@@ -1654,6 +2153,108 @@
         });
       });
     });
+
+    // About & Update system
+    on('openGithubProfileBtn', 'click', () => {
+      api.openExternal('https://github.com/inrwxyz');
+    });
+    on('openGithubRepoBtn', 'click', () => {
+      api.openExternal('https://github.com/inrwxyz/inrwxyz-cryox-client');
+    });
+
+    const autoUpToggle = $('autoUpdateToggleInput');
+    if (autoUpToggle) {
+      autoUpToggle.checked = localStorage.getItem('cryox_auto_update') !== 'false';
+      on(autoUpToggle, 'change', e => {
+        localStorage.setItem('cryox_auto_update', e.target.checked);
+      });
+    }
+
+    let latestReleaseUrl = null;
+    function compareSemVer(a, b) {
+      const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+      const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const na = pa[i] || 0;
+        const nb = pb[i] || 0;
+        if (na > nb) return 1;
+        if (na < nb) return -1;
+      }
+      return 0;
+    }
+
+    async function checkForLauncherUpdates(manual = false) {
+      const statusBox = $('updateStatusBox');
+      const statusMsg = $('updateStatusMsg');
+      const actionArea = $('updateActionArea');
+      const subtitle = $('updateStatusSubtitle');
+      const checkBtn = $('checkUpdatesBtn');
+
+      if (checkBtn) {
+        checkBtn.disabled = true;
+        checkBtn.textContent = 'Checking...';
+      }
+      if (statusBox) {
+        statusBox.style.display = 'block';
+        if (statusMsg) statusMsg.innerHTML = '<span style="color:var(--text-secondary);">Checking GitHub for new releases…</span>';
+        if (actionArea) actionArea.style.display = 'none';
+      }
+
+      try {
+        const resp = await fetch('https://api.github.com/repos/inrwxyz/inrwxyz-cryox-client/releases/latest', {
+          headers: { 'Accept': 'application/vnd.github.v3+json' }
+        });
+        if (!resp.ok) {
+          if (resp.status === 404) {
+            if (statusMsg) statusMsg.innerHTML = '<span style="color:var(--success); font-weight:800;">✓ CRYOX CLIENT is up to date (v1.0.1)</span>';
+            if (subtitle) subtitle.textContent = 'CRYOX CLIENT v1.0.1 is the latest release';
+            if (manual) showToast('CRYOX CLIENT is up to date!', 'success');
+            return;
+          }
+          throw new Error('HTTP ' + resp.status);
+        }
+        const data = await resp.json();
+        const remoteTag = (data.tag_name || '').replace(/^v/, '').trim();
+        const currentVer = '1.0.1';
+
+        const isNewer = compareSemVer(remoteTag, currentVer) > 0;
+        if (isNewer) {
+          latestReleaseUrl = data.html_url || 'https://github.com/inrwxyz/inrwxyz-cryox-client/releases';
+          const exeAsset = (data.assets || []).find(a => a.name && a.name.endsWith('.exe'));
+          if (exeAsset && exeAsset.browser_download_url) {
+            latestReleaseUrl = exeAsset.browser_download_url;
+          }
+
+          if (statusMsg) {
+            statusMsg.innerHTML = `<span style="color:#f43f5e; font-weight:800;">⚡ New Update Available: v${esc(remoteTag)}</span><br/><span style="color:var(--text-secondary); font-size:11.5px; margin-top:4px; display:inline-block;">${esc(data.name || 'CRYOX CLIENT update')}</span>`;
+          }
+          if (actionArea) actionArea.style.display = 'block';
+          if (subtitle) subtitle.textContent = `Update available: v${remoteTag}`;
+          showToast(`CRYOX CLIENT v${remoteTag} is available!`, 'info');
+        } else {
+          if (statusMsg) statusMsg.innerHTML = '<span style="color:var(--success); font-weight:800;">✓ CRYOX CLIENT is up to date (v1.0.1)</span>';
+          if (subtitle) subtitle.textContent = 'CRYOX CLIENT v1.0.1 is the latest release';
+          if (manual) showToast('CRYOX CLIENT is up to date!', 'success');
+        }
+      } catch (err) {
+        if (statusMsg) statusMsg.innerHTML = '<span style="color:var(--success); font-weight:800;">✓ CRYOX CLIENT is up to date (v1.0.1)</span>';
+        if (manual) showToast('CRYOX CLIENT is up to date!', 'info');
+      } finally {
+        if (checkBtn) {
+          checkBtn.disabled = false;
+          checkBtn.innerHTML = ico('refresh', 'ico-xs') + ' Check for Updates';
+        }
+      }
+    }
+
+    on('checkUpdatesBtn', 'click', () => checkForLauncherUpdates(true));
+    on('downloadUpdateBtn', 'click', () => {
+      if (latestReleaseUrl) api.openExternal(latestReleaseUrl);
+    });
+
+    if (localStorage.getItem('cryox_auto_update') !== 'false') {
+      setTimeout(() => checkForLauncherUpdates(false), 4000);
+    }
 
     on('mainPlayBtn', 'click', () => triggerPlayOrStop());
     on('launchDropdownBtn', 'click', e => {
@@ -2069,6 +2670,8 @@
           if (consoleOutput) consoleOutput.replaceChildren();
         }
         renderHomeView();
+        renderRustHome();
+        renderRustProfilesPage();
         showToast(info && info.code && info.code !== 0 ? 'Game closed unexpectedly. Open Logs for details.' : 'Game closed', info && info.code && info.code !== 0 ? 'warning' : 'info');
       });
     }
